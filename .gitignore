@@ -17,6 +17,10 @@ build/
 .env.test.local
 .env.production.local
 
+# Configuration files with sensitive data
+config/google.json
+config/credentials.json
+
 # WhatsApp session data (security)
 .wwebjs_cache/
 .wwebjs_auth/
