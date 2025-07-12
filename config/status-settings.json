@@ -1,0 +1,16 @@
+{
+  "enabledStatuses": {
+    "newOrder": true,
+    "noAnswer": true,
+    "shipped": true,
+    "rejectedOffer": true,
+    "reminder": true
+  },
+  "statusDescriptions": {
+    "newOrder": "الطلبات الجديدة - إرسال رسالة ترحيب للطلبات الجديدة",
+    "noAnswer": "لم يرد - إرسال رسالة متابعة عند عدم الرد",
+    "shipped": "تم الشحن/التأكيد - إرسال رسالة تأكيد الشحن",
+    "rejectedOffer": "مرفوض - إرسال عرض خاص بعد 24 ساعة",
+    "reminder": "تذكير تلقائي - إرسال تذكير للطلبات المعلقة"
+  }
+} 

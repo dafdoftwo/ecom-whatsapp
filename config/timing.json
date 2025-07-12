@@ -1,0 +1,5 @@
+{
+  "checkIntervalSeconds": 30,
+  "reminderDelayHours": 24,
+  "rejectedOfferDelayHours": 48
+} 
