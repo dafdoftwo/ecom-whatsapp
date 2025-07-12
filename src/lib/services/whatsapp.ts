@@ -285,71 +285,77 @@ export class WhatsAppService {
       console.log('📡 Setting up fetch polyfill...');
       await ensureFetchPolyfill();
       await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 5: Detect environment and set Puppeteer path
+      const isRailway = process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_PROJECT_NAME;
+      const isDocker = process.env.DOCKER_CONTAINER || process.env.NODE_ENV === 'production';
       
-      // Step 5: Create new client with optimized settings
-      console.log('🏗️ Creating WhatsApp client with professional settings...');
+      let puppeteerConfig: any = {
+        headless: true,
+        timeout: SESSION_CONFIG.PUPPETEER_TIMEOUT_MS,
+        defaultViewport: { width: 1280, height: 720 },
+        ignoreHTTPSErrors: true,
+        handleSIGINT: false,
+        handleSIGTERM: false,
+        handleSIGHUP: false,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--disable-web-security',
+          '--disable-extensions',
+          '--disable-plugins',
+          '--disable-images',
+          '--no-default-browser-check',
+          '--disable-default-apps',
+          '--single-process',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=TranslateUI,VizDisplayCompositor',
+          '--memory-pressure-off',
+          '--max_old_space_size=4096',
+          '--disable-ipc-flooding-protection'
+        ]
+      };
+
+      // Railway/Docker specific configuration
+      if (isRailway || isDocker) {
+        console.log('🐳 Detected Railway/Docker environment - using optimized settings');
+        puppeteerConfig.executablePath = '/usr/bin/chromium-browser';
+        puppeteerConfig.args.push(
+          '--disable-gpu-sandbox',
+          '--disable-software-rasterizer',
+          '--disable-background-downloads',
+          '--disable-add-to-shelf',
+          '--disable-client-side-phishing-detection',
+          '--no-crash-upload',
+          '--disable-hang-monitor',
+          '--disable-prompt-on-repost'
+        );
+      }
+      
+      // Step 6: Create new client with optimized settings
+      console.log('🏗️ Creating WhatsApp client with Railway-optimized settings...');
       this.client = new Client({
         authStrategy: new LocalAuth({
           clientId: SESSION_CONFIG.CLIENT_ID,
           dataPath: SESSION_CONFIG.SESSION_PATH
         }),
-        puppeteer: {
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-web-security',
-            '--disable-extensions',
-            '--disable-plugins',
-            '--disable-images',
-            '--no-default-browser-check',
-            '--disable-default-apps',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-features=TranslateUI,VizDisplayCompositor',
-            '--disable-sync',
-            '--metrics-recording-only',
-            '--no-crash-upload',
-            '--disable-hang-monitor',
-            '--disable-prompt-on-repost',
-            '--disable-client-side-phishing-detection',
-            '--disable-component-extensions-with-background-pages',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-ipc-flooding-protection',
-            '--disable-dev-tools',
-            '--disable-features=VizDisplayCompositor',
-            '--memory-pressure-off',
-            '--no-startup-window',
-            '--disable-translate',
-            '--disable-background-networking',
-            '--disable-background-downloads',
-            '--disable-add-to-shelf',
-            '--disable-client-side-phishing-detection',
-            '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          ],
-          timeout: SESSION_CONFIG.PUPPETEER_TIMEOUT_MS,
-          defaultViewport: { width: 1280, height: 720 }, // Set explicit viewport
-          ignoreHTTPSErrors: true,
-          ignoreDefaultArgs: ['--disable-extensions'],
-          handleSIGINT: false,
-          handleSIGTERM: false,
-          handleSIGHUP: false
-        },
+        puppeteer: puppeteerConfig,
         takeoverOnConflict: true,
-        takeoverTimeoutMs: 10000 // تقليل إلى 10 ثوانٍ
+        takeoverTimeoutMs: 10000
       });
 
-      // Step 6: Setup event handlers
+      // Step 7: Setup event handlers
       console.log('🎯 Setting up event handlers...');
       this.setupEventHandlers();
       
-      // Step 7: Initialize with timeout
+      // Step 8: Initialize with timeout
       console.log('🚀 Starting WhatsApp client initialization...');
       
       const initPromise = this.client.initialize();

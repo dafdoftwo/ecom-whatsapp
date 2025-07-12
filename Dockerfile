@@ -9,11 +9,14 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
+    dumb-init \
     && rm -rf /var/cache/apk/*
 
-# Set environment variable for Puppeteer to use installed Chromium
+# Set environment variables for Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV CHROME_BIN=/usr/bin/chromium-browser
+ENV CHROME_PATH=/usr/bin/chromium-browser
 
 # Build stage
 FROM base AS builder
@@ -42,6 +45,11 @@ WORKDIR /app
 
 # Set production environment
 ENV NODE_ENV=production
+ENV DOCKER_CONTAINER=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV CHROME_BIN=/usr/bin/chromium-browser
+ENV CHROME_PATH=/usr/bin/chromium-browser
 
 # Create nextjs user
 RUN addgroup -g 1001 -S nodejs
@@ -60,7 +68,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --chown=nextjs:nodejs next.config.js ./
 
 # Create necessary directories
-RUN mkdir -p ./public ./config
+RUN mkdir -p ./public ./config ./whatsapp-session-pro
 
 # Ensure nextjs user owns everything
 RUN chown -R nextjs:nodejs /app
@@ -70,6 +78,9 @@ USER nextjs
 
 # Expose port
 EXPOSE 3000
+
+# Use dumb-init for proper signal handling
+ENTRYPOINT ["dumb-init", "--"]
 
 # Start application
 CMD ["npm", "start"] 
