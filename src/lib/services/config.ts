@@ -116,19 +116,19 @@ export class ConfigService {
   // Get all configurations
   static async getAllConfigs() {
     try {
-      const [google, messages, timing, statusSettings] = await Promise.all([
-        this.getGoogleConfig(),
-        this.getMessageTemplates(),
-        this.getTimingConfig(),
-        this.getStatusSettings(),
-      ]);
+    const [google, messages, timing, statusSettings] = await Promise.all([
+      this.getGoogleConfig(),
+      this.getMessageTemplates(),
+      this.getTimingConfig(),
+      this.getStatusSettings(),
+    ]);
 
-      return {
-        google,
-        messages: messages.templates,
-        timing,
+    return {
+      google,
+      messages: messages.templates,
+      timing,
         statusSettings: statusSettings || DEFAULT_STATUS_SETTINGS,
-      };
+    };
     } catch (error) {
       console.error('Error getting all configs:', error);
       // Return defaults if all configs fail

@@ -285,39 +285,39 @@ export class WhatsAppService {
       console.log('📡 Setting up fetch polyfill...');
       await ensureFetchPolyfill();
       await new Promise(resolve => setTimeout(resolve, 1000));
-
+      
       // Step 5: Detect environment and set Puppeteer path
       const isRailway = process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_PROJECT_NAME;
       const isDocker = process.env.DOCKER_CONTAINER || process.env.NODE_ENV === 'production';
       
       let puppeteerConfig: any = {
-        headless: true,
+          headless: true,
         timeout: SESSION_CONFIG.PUPPETEER_TIMEOUT_MS,
         defaultViewport: { width: 1280, height: 720 },
         ignoreHTTPSErrors: true,
         handleSIGINT: false,
         handleSIGTERM: false,
         handleSIGHUP: false,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
-          '--disable-gpu',
-          '--disable-web-security',
-          '--disable-extensions',
-          '--disable-plugins',
-          '--disable-images',
-          '--no-default-browser-check',
-          '--disable-default-apps',
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-extensions',
+            '--disable-plugins',
+            '--disable-images',
+            '--no-default-browser-check',
+            '--disable-default-apps',
           '--single-process',
-          '--disable-background-timer-throttling',
-          '--disable-backgrounding-occluded-windows',
-          '--disable-renderer-backgrounding',
-          '--disable-features=TranslateUI,VizDisplayCompositor',
-          '--memory-pressure-off',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI,VizDisplayCompositor',
+            '--memory-pressure-off',
           '--max_old_space_size=4096',
           '--disable-ipc-flooding-protection'
         ]
@@ -330,9 +330,9 @@ export class WhatsAppService {
         puppeteerConfig.args.push(
           '--disable-gpu-sandbox',
           '--disable-software-rasterizer',
-          '--disable-background-downloads',
-          '--disable-add-to-shelf',
-          '--disable-client-side-phishing-detection',
+            '--disable-background-downloads',
+            '--disable-add-to-shelf',
+            '--disable-client-side-phishing-detection',
           '--no-crash-upload',
           '--disable-hang-monitor',
           '--disable-prompt-on-repost'
