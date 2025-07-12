@@ -133,8 +133,6 @@ export class AutomationEngine {
   }
 
   private static async startProcessingLoop(): Promise<void> {
-    const checkInterval = 30000; // 30 seconds
-    
     const processLoop = async () => {
       if (!this.isRunning) {
         console.log('🛑 Automation engine stopped, exiting loop');
@@ -142,21 +140,35 @@ export class AutomationEngine {
       }
 
       try {
-        console.log('🔄 Egyptian automation engine processing cycle...');
+        // Get the correct check interval from configuration
+        const { checkIntervalSeconds } = await ConfigService.getTimingConfig();
+        const checkInterval = checkIntervalSeconds * 1000; // Convert to milliseconds
+
+        console.log(`🔄 Egyptian automation engine processing cycle... (Next check in ${checkIntervalSeconds}s)`);
+        
         // استخدام المعالجة المبسطة بدلاً من المعقدة
         await this.processSheetData();
+        
+        console.log(`✅ Processing cycle completed. Next check in ${checkIntervalSeconds} seconds`);
+        
+        // Schedule next processing with the correct interval
+        if (this.isRunning) {
+          this.intervalId = setTimeout(processLoop, checkInterval);
+        }
       } catch (error) {
         console.error('❌ Error in processing cycle:', error);
-      }
-
-      // Schedule next processing
-      if (this.isRunning) {
-        this.intervalId = setTimeout(processLoop, checkInterval);
+        
+        // On error, retry after 60 seconds
+        if (this.isRunning) {
+          console.log('⏳ Retrying after 60 seconds due to error...');
+          this.intervalId = setTimeout(processLoop, 60000);
+        }
       }
     };
 
-    // Start the first processing cycle
-    this.intervalId = setTimeout(processLoop, 1000); // Start after 1 second
+    // Start the first processing cycle after 5 seconds
+    console.log('🚀 Starting automation engine processing loop in 5 seconds...');
+    this.intervalId = setTimeout(processLoop, 5000);
   }
 
   private static async processSheetData(): Promise<void> {
