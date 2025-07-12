@@ -67,8 +67,11 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 # Copy next.config.js
 COPY --chown=nextjs:nodejs next.config.js ./
 
+# Copy config directory
+COPY --chown=nextjs:nodejs config ./config
+
 # Create necessary directories
-RUN mkdir -p ./public ./config ./whatsapp-session-pro
+RUN mkdir -p ./public ./whatsapp-session-pro
 
 # Ensure nextjs user owns everything
 RUN chown -R nextjs:nodejs /app

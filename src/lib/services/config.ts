@@ -4,20 +4,70 @@ import type { GoogleConfig, MessageTemplates, TimingConfig } from '../types/conf
 
 const CONFIG_DIR = path.join(process.cwd(), 'config');
 
+// Default configurations
+const DEFAULT_GOOGLE_CONFIG: GoogleConfig = {
+  spreadsheetUrl: '',
+  credentials: {}
+};
+
+const DEFAULT_MESSAGE_TEMPLATES: MessageTemplates = {
+  newOrder: 'السلام عليكم ورحمة الله مع حضرتك هبه✨\nطلبك ({productName}) في أيدٍ أمينة، وفريقنا بدأ في إعداده بكل شغف واهتمام. سنتواصل معك قريباً للتأكيد.\nشكراً لثقتك بنا !',
+  noAnswer: 'السلام عليكم ورحمة الله وبركاته مع حضرتك هبه\nيبدو أننا لم نوفق في التواصل معك هاتفياً لتأكيد طلبك ({productName}). 😟\nحرصاً منا على عدم تأخيره، نرجو منك الرد علينا في أقرب فرصة. نحن في انتظارك!',
+  shipped: 'أخبار رائعة، لحضرتك 🎉\nطلبك ({productName}) انطلق في رحلته إليك الآن. استعد لاستقبال جرعة من السعادة قريباً! 🚚\nشكراً لصبرك وحماسك.',
+  rejectedOffer: 'السلام عليكم اخبار حضرتك ايه؟\nقد لا يكون طلبك الأخير قد اكتمل، لكننا لم ننسَ اهتمامك بنا. ❤️\nتقديراً لذلك، يسعدنا أن نهديك فرصة ثانية بتخفيض خاص 20% على ({productName}). نأمل أن تستفيد من هذا الخصم!',
+  reminder: 'السلام عليكم\n\nالمحترم/ة {name}\n\n⏰ تذكير بطلبكم رقم {orderId}\n\n💰 المبلغ: {amount} جنيه (دفع عند الاستلام)\n\n⚠️ تنبيه:\n• المنتج متوفر بكمية محدودة\n• السعر مضمون حتى نهاية اليوم\n• قد ينفذ في أي وقت\n\n📱 للتأكيد:\n• رد بكلمة \"أؤكد\"\n• أو اتصل بنا\n\n🎁 عند التأكيد اليوم: هدية مجانية\n\nفريق {companyName}',
+  welcome: '',
+  confirmed: '',
+  delivered: '',
+  cancelled: ''
+};
+
+const DEFAULT_TIMING_CONFIG: TimingConfig = {
+  checkIntervalSeconds: 30,
+  reminderDelayHours: 24,
+  rejectedOfferDelayHours: 48
+};
+
+const DEFAULT_STATUS_SETTINGS = {
+  enabledStatuses: {
+    newOrder: true,
+    noAnswer: true,
+    shipped: true,
+    rejectedOffer: true,
+    reminder: true
+  },
+  statusDescriptions: {
+    newOrder: "الطلبات الجديدة - إرسال رسالة ترحيب للطلبات الجديدة",
+    noAnswer: "لم يرد - إرسال رسالة متابعة عند عدم الرد",
+    shipped: "تم الشحن/التأكيد - إرسال رسالة تأكيد الشحن",
+    rejectedOffer: "مرفوض - إرسال عرض خاص بعد 24 ساعة",
+    reminder: "تذكير تلقائي - إرسال تذكير للطلبات المعلقة"
+  }
+};
+
 export class ConfigService {
-  private static async readConfigFile<T>(filename: string): Promise<T> {
+  private static async ensureConfigDir(): Promise<void> {
+    try {
+      await fs.access(CONFIG_DIR);
+    } catch (error) {
+      await fs.mkdir(CONFIG_DIR, { recursive: true });
+    }
+  }
+
+  private static async readConfigFile<T>(filename: string, defaultValue: T): Promise<T> {
     try {
       const filePath = path.join(CONFIG_DIR, filename);
       const content = await fs.readFile(filePath, 'utf-8');
       return JSON.parse(content);
     } catch (error) {
-      console.error(`Error reading config file ${filename}:`, error);
-      throw new Error(`Failed to read configuration file: ${filename}`);
+      console.warn(`Config file ${filename} not found or invalid, using defaults:`, error);
+      return defaultValue;
     }
   }
 
   private static async writeConfigFile<T>(filename: string, data: T): Promise<void> {
     try {
+      await this.ensureConfigDir();
       const filePath = path.join(CONFIG_DIR, filename);
       await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
     } catch (error) {
@@ -28,7 +78,7 @@ export class ConfigService {
 
   // Google Configuration
   static async getGoogleConfig(): Promise<GoogleConfig> {
-    return this.readConfigFile<GoogleConfig>('google.json');
+    return this.readConfigFile<GoogleConfig>('google.json', DEFAULT_GOOGLE_CONFIG);
   }
 
   static async setGoogleConfig(config: GoogleConfig): Promise<void> {
@@ -37,7 +87,8 @@ export class ConfigService {
 
   // Message Templates
   static async getMessageTemplates(): Promise<{ templates: MessageTemplates }> {
-    return this.readConfigFile<{ templates: MessageTemplates }>('messages.json');
+    const result = await this.readConfigFile<{ templates: MessageTemplates }>('messages.json', { templates: DEFAULT_MESSAGE_TEMPLATES });
+    return result;
   }
 
   static async setMessageTemplates(templates: MessageTemplates): Promise<void> {
@@ -46,64 +97,90 @@ export class ConfigService {
 
   // Timing Configuration
   static async getTimingConfig(): Promise<TimingConfig> {
-    return this.readConfigFile<TimingConfig>('timing.json');
+    return this.readConfigFile<TimingConfig>('timing.json', DEFAULT_TIMING_CONFIG);
   }
 
   static async setTimingConfig(config: TimingConfig): Promise<void> {
     return this.writeConfigFile('timing.json', config);
   }
 
-  // Get all configurations
-  static async getAllConfigs() {
-    const [google, messages, timing, statusSettings] = await Promise.all([
-      this.getGoogleConfig(),
-      this.getMessageTemplates(),
-      this.getTimingConfig(),
-      this.getStatusSettings(),
-    ]);
-
-    return {
-      google,
-      messages: messages.templates,
-      timing,
-      statusSettings: statusSettings || {
-        enabledStatuses: {
-          newOrder: true,
-          noAnswer: true,
-          shipped: true,
-          rejectedOffer: true,
-          reminder: true
-        }
-      },
-    };
-  }
-
   // Status Settings
   static async getStatusSettings(): Promise<any> {
-    try {
-      return await this.readConfigFile<any>('status-settings.json');
-    } catch (error) {
-      // Return default settings if file doesn't exist
-      return {
-        enabledStatuses: {
-          newOrder: true,
-          noAnswer: true,
-          shipped: true,
-          rejectedOffer: true,
-          reminder: true
-        },
-        statusDescriptions: {
-          newOrder: "الطلبات الجديدة - إرسال رسالة ترحيب للطلبات الجديدة",
-          noAnswer: "لم يرد - إرسال رسالة متابعة عند عدم الرد",
-          shipped: "تم الشحن/التأكيد - إرسال رسالة تأكيد الشحن",
-          rejectedOffer: "مرفوض - إرسال عرض خاص بعد 24 ساعة",
-          reminder: "تذكير تلقائي - إرسال تذكير للطلبات المعلقة"
-        }
-      };
-    }
+    return this.readConfigFile<any>('status-settings.json', DEFAULT_STATUS_SETTINGS);
   }
 
   static async setStatusSettings(settings: any): Promise<void> {
     return this.writeConfigFile('status-settings.json', settings);
+  }
+
+  // Get all configurations
+  static async getAllConfigs() {
+    try {
+      const [google, messages, timing, statusSettings] = await Promise.all([
+        this.getGoogleConfig(),
+        this.getMessageTemplates(),
+        this.getTimingConfig(),
+        this.getStatusSettings(),
+      ]);
+
+      return {
+        google,
+        messages: messages.templates,
+        timing,
+        statusSettings: statusSettings || DEFAULT_STATUS_SETTINGS,
+      };
+    } catch (error) {
+      console.error('Error getting all configs:', error);
+      // Return defaults if all configs fail
+      return {
+        google: DEFAULT_GOOGLE_CONFIG,
+        messages: DEFAULT_MESSAGE_TEMPLATES,
+        timing: DEFAULT_TIMING_CONFIG,
+        statusSettings: DEFAULT_STATUS_SETTINGS,
+      };
+    }
+  }
+
+  // Health check for configuration status
+  static async getConfigHealth(): Promise<{
+    google: { exists: boolean; valid: boolean; configured: boolean };
+    messages: { exists: boolean; valid: boolean };
+    timing: { exists: boolean; valid: boolean };
+    statusSettings: { exists: boolean; valid: boolean };
+  }> {
+    const health = {
+      google: { exists: false, valid: false, configured: false },
+      messages: { exists: false, valid: false },
+      timing: { exists: false, valid: false },
+      statusSettings: { exists: false, valid: false }
+    };
+
+    try {
+      // Check Google config
+      const googleConfig = await this.getGoogleConfig();
+      health.google.exists = true;
+      health.google.valid = !!(googleConfig.spreadsheetUrl && googleConfig.credentials);
+      health.google.configured = health.google.valid && Object.keys(googleConfig.credentials).length > 0;
+
+      // Check messages
+      const messagesConfig = await this.getMessageTemplates();
+      health.messages.exists = true;
+      health.messages.valid = !!(messagesConfig.templates && messagesConfig.templates.newOrder);
+
+      // Check timing
+      const timingConfig = await this.getTimingConfig();
+      health.timing.exists = true;
+      health.timing.valid = !!(timingConfig.checkIntervalSeconds && timingConfig.reminderDelayHours);
+
+      // Check status settings
+      const statusConfig = await this.getStatusSettings();
+      health.statusSettings.exists = true;
+      health.statusSettings.valid = !!(statusConfig.enabledStatuses);
+
+    } catch (error) {
+      console.error('Error checking config health:', error);
+    }
+
+    return health;
   }
 } 
