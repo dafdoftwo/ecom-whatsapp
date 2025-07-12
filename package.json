@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "SKIP_ENV_VALIDATION=true DISABLE_ESLINT=true next build",
-    "build:railway": "SKIP_ENV_VALIDATION=true DISABLE_ESLINT=true next build",
+    "build": "DISABLE_ESLINT=true SKIP_ENV_VALIDATION=true next build",
+    "build:railway": "DISABLE_ESLINT=true SKIP_ENV_VALIDATION=true next build",
     "start": "next start",
     "lint": "echo 'ESLint disabled for deployment'"
   },
