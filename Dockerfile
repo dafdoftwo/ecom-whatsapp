@@ -56,15 +56,11 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 
-# Create public directory and copy if exists
-RUN mkdir -p ./public
-COPY --from=builder /app/public ./public/ 2>/dev/null || true
-
-# Copy other necessary files
+# Copy next.config.js
 COPY --chown=nextjs:nodejs next.config.js ./
 
-# Copy config directory if it exists
-COPY config ./config/ 2>/dev/null || true
+# Create necessary directories
+RUN mkdir -p ./public ./config
 
 # Ensure nextjs user owns everything
 RUN chown -R nextjs:nodejs /app
