@@ -70,6 +70,29 @@ export class AutomationEngine {
     lastResetTime: Date.now()
   };
 
+  // ⚡ PERFORMANCE OPTIMIZATION: Phone number validation cache
+  private static phoneValidationCache = new Map<string, {
+    isValid: boolean;
+    isRegistered: boolean;
+    processedPhone: string;
+    lastChecked: number;
+    reason?: string;
+  }>();
+
+  // Cache expiration time (24 hours)
+  private static PHONE_CACHE_EXPIRATION = 24 * 60 * 60 * 1000;
+
+  // Performance monitoring
+  private static performanceStats = {
+    lastProcessingTime: 0,
+    avgProcessingTime: 0,
+    totalProcessingCycles: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    whatsappApiCalls: 0,
+    processingStartTime: 0
+  };
+
   static async start(): Promise<void> {
     if (this.isRunning) {
       console.log('Automation engine is already running');
@@ -77,24 +100,123 @@ export class AutomationEngine {
     }
 
     try {
-      console.log('🚀 Starting Egyptian WhatsApp automation engine...');
+      console.log('🚀 Starting OPTIMIZED Egyptian WhatsApp automation engine...');
       
       // Log supported statuses for debugging
       this.logSupportedStatuses();
+      
+      // Initialize cache cleanup timer
+      this.initializeCacheCleanup();
       
       this.isRunning = true;
       
       // Initialize queue service
       await QueueService.initialize();
       
+      // Pre-warm phone validation cache
+      await this.preWarmPhoneCache();
+      
       // Start the main processing loop
       await this.startProcessingLoop();
       
-      console.log('✅ Egyptian automation engine started successfully');
+      console.log('✅ OPTIMIZED Egyptian automation engine started successfully');
     } catch (error) {
       console.error('❌ Error starting automation engine:', error);
       this.isRunning = false;
       throw error;
+    }
+  }
+
+  private static async preWarmPhoneCache(): Promise<void> {
+    try {
+      console.log('🔥 Pre-warming phone validation cache...');
+      
+      // Get all orders quickly first
+      const sheetData = await GoogleSheetsService.getSheetData();
+      
+      if (!sheetData || sheetData.length === 0) {
+        console.log('No data to pre-warm cache');
+        return;
+      }
+
+      const whatsapp = WhatsAppService.getInstance();
+      const isConnected = whatsapp.getStatus().isConnected;
+      
+      if (!isConnected) {
+        console.log('⚠️ WhatsApp not connected, skipping cache pre-warming');
+        return;
+      }
+
+      // Get unique phone numbers
+      const uniquePhones = new Set<string>();
+      
+      sheetData.forEach(row => {
+        if (row.phone) {
+          const processed = PhoneProcessor.formatForWhatsApp(row.phone);
+          if (processed) uniquePhones.add(processed);
+        }
+        if (row.whatsappNumber) {
+          const processed = PhoneProcessor.formatForWhatsApp(row.whatsappNumber);
+          if (processed) uniquePhones.add(processed);
+        }
+      });
+
+      console.log(`📱 Pre-warming cache for ${uniquePhones.size} unique phone numbers...`);
+      
+      // Validate in batches to avoid overwhelming WhatsApp
+      const phoneArray = Array.from(uniquePhones);
+      const batchSize = 10;
+      
+      for (let i = 0; i < phoneArray.length; i += batchSize) {
+        const batch = phoneArray.slice(i, i + batchSize);
+        
+        await Promise.all(batch.map(async (phone) => {
+          try {
+            const result = await whatsapp.validatePhoneNumber(phone);
+            this.phoneValidationCache.set(phone, {
+              isValid: result.isValid,
+              isRegistered: result.isRegistered,
+              processedPhone: result.processedNumber,
+              lastChecked: Date.now(),
+              reason: result.error
+            });
+          } catch (error) {
+            console.warn(`Failed to validate ${phone}:`, error);
+          }
+        }));
+        
+        // Small delay between batches
+        if (i + batchSize < phoneArray.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      console.log(`✅ Cache pre-warmed with ${this.phoneValidationCache.size} validated numbers`);
+    } catch (error) {
+      console.error('Error pre-warming cache:', error);
+    }
+  }
+
+  private static initializeCacheCleanup(): void {
+    // Clean cache every hour
+    setInterval(() => {
+      this.cleanupExpiredCache();
+    }, 60 * 60 * 1000);
+  }
+
+  private static cleanupExpiredCache(): void {
+    const now = Date.now();
+    let cleaned = 0;
+    
+    for (const [phone, data] of this.phoneValidationCache.entries()) {
+      if (now - data.lastChecked > this.PHONE_CACHE_EXPIRATION) {
+        this.phoneValidationCache.delete(phone);
+        cleaned++;
+      }
+    }
+    
+    if (cleaned > 0) {
+      console.log(`🧹 Cleaned ${cleaned} expired cache entries`);
     }
   }
 
@@ -133,6 +255,9 @@ export class AutomationEngine {
   }
 
   private static async startProcessingLoop(): Promise<void> {
+    const timingConfig = await ConfigService.getTimingConfig();
+    const checkInterval = (timingConfig.checkIntervalSeconds || 30) * 1000;
+    
     const processLoop = async () => {
       if (!this.isRunning) {
         console.log('🛑 Automation engine stopped, exiting loop');
@@ -140,42 +265,42 @@ export class AutomationEngine {
       }
 
       try {
-        // Get the correct check interval from configuration
-        const { checkIntervalSeconds } = await ConfigService.getTimingConfig();
-        const checkInterval = checkIntervalSeconds * 1000; // Convert to milliseconds
-
-        console.log(`🔄 Egyptian automation engine processing cycle... (Next check in ${checkIntervalSeconds}s)`);
+        this.performanceStats.processingStartTime = Date.now();
+        console.log('🔄 Egyptian automation engine processing cycle (OPTIMIZED)...');
         
-        // استخدام المعالجة المبسطة بدلاً من المعقدة
-        await this.processSheetData();
+        // استخدام المعالجة المحسنة
+        await this.processSheetDataOptimized();
         
-        console.log(`✅ Processing cycle completed. Next check in ${checkIntervalSeconds} seconds`);
+        // Update performance stats
+        const processingTime = Date.now() - this.performanceStats.processingStartTime;
+        this.performanceStats.lastProcessingTime = processingTime;
+        this.performanceStats.totalProcessingCycles++;
+        this.performanceStats.avgProcessingTime = 
+          (this.performanceStats.avgProcessingTime * (this.performanceStats.totalProcessingCycles - 1) + processingTime) / 
+          this.performanceStats.totalProcessingCycles;
         
-        // Schedule next processing with the correct interval
-        if (this.isRunning) {
-          this.intervalId = setTimeout(processLoop, checkInterval);
-        }
+        console.log(`⚡ Processing completed in ${processingTime}ms (avg: ${Math.round(this.performanceStats.avgProcessingTime)}ms)`);
+        console.log(`📊 Cache stats: ${this.performanceStats.cacheHits} hits, ${this.performanceStats.cacheMisses} misses, ${this.performanceStats.whatsappApiCalls} API calls`);
+        
       } catch (error) {
         console.error('❌ Error in processing cycle:', error);
-        
-        // On error, retry after 60 seconds
-        if (this.isRunning) {
-          console.log('⏳ Retrying after 60 seconds due to error...');
-          this.intervalId = setTimeout(processLoop, 60000);
-        }
+      }
+
+      // Schedule next processing
+      if (this.isRunning) {
+        this.intervalId = setTimeout(processLoop, checkInterval);
       }
     };
 
-    // Start the first processing cycle after 5 seconds
-    console.log('🚀 Starting automation engine processing loop in 5 seconds...');
-    this.intervalId = setTimeout(processLoop, 5000);
+    // Start the first processing cycle
+    this.intervalId = setTimeout(processLoop, 1000); // Start after 1 second
   }
 
-  private static async processSheetData(): Promise<void> {
+  private static async processSheetDataOptimized(): Promise<void> {
     try {
-      console.log('🔄 Processing Egyptian sheet data...');
+      console.log('🔄 Processing Egyptian sheet data (OPTIMIZED)...');
       
-      // Get sheet data with Egyptian processing
+      // Get sheet data
       const sheetData = await GoogleSheetsService.getSheetData();
       
       if (!sheetData || sheetData.length === 0) {
@@ -183,9 +308,9 @@ export class AutomationEngine {
         return;
       }
 
-      console.log(`📊 Found ${sheetData.length} potential orders to process`);
+      console.log(`📊 Found ${sheetData.length} orders to process`);
 
-      // Get timing configuration and message templates
+      // Get configuration
       const { reminderDelayHours, rejectedOfferDelayHours } = await ConfigService.getTimingConfig();
       const { templates } = await ConfigService.getMessageTemplates();
 
@@ -194,64 +319,52 @@ export class AutomationEngine {
       let invalidPhoneCount = 0;
       let whatsappValidationCount = 0;
 
-      for (const row of sheetData) {
-        // Stage 1: Data Sanitization & Phone Number Resolution
-        const sanitizationResult = await this.sanitizeAndValidateRow(row);
+      // Process in batches for better performance
+      const batchSize = 20;
+      for (let i = 0; i < sheetData.length; i += batchSize) {
+        const batch = sheetData.slice(i, i + batchSize);
         
-        if (!sanitizationResult.isValid) {
-          if (sanitizationResult.reason === 'invalid_phone') {
-            invalidPhoneCount++;
-            // Update sheet with invalid phone status - DISABLED (READ-ONLY MODE)
-            // if (row.rowIndex) {
-            //   await GoogleSheetsService.updateWhatsAppStatus(
-            //     row.rowIndex,
-            //     'رقم هاتف غير صحيح',
-            //     sanitizationResult.details
-            //   );
-            // }
-            console.log(`🔒 READ-ONLY: Would mark row ${row.rowIndex} as invalid phone`);
-          } else if (sanitizationResult.reason === 'not_whatsapp_user') {
-            whatsappValidationCount++;
-            // Update sheet with "not WhatsApp user" status - DISABLED (READ-ONLY MODE)
-            // if (row.rowIndex) {
-            //   await GoogleSheetsService.updateWhatsAppStatus(
-            //     row.rowIndex,
-            //     'رقم واتساب غير صحيح',
-            //     'الرقم غير مسجل على الواتساب'
-            //   );
-            // }
-            console.log(`🔒 READ-ONLY: Would mark row ${row.rowIndex} as not WhatsApp user`);
+        for (const row of batch) {
+          // Stage 1: FAST Data Sanitization & Phone Number Resolution
+          const sanitizationResult = await this.sanitizeAndValidateRowOptimized(row);
+          
+          if (!sanitizationResult.isValid) {
+            if (sanitizationResult.reason === 'invalid_phone') {
+              invalidPhoneCount++;
+            } else if (sanitizationResult.reason === 'not_whatsapp_user') {
+              whatsappValidationCount++;
+            }
+            skippedCount++;
+            continue;
           }
-          skippedCount++;
-          continue;
-        }
 
-        // Stage 2: Business Logic Application
-        const orderId = row.orderId!;
-        const currentStatus = row.orderStatus;
-        const previousStatusData = this.orderStatusHistory.get(orderId);
-        
-        // Update status history
-        this.orderStatusHistory.set(orderId, {
-          status: currentStatus,
-          timestamp: Date.now()
-        });
+          // Stage 2: Business Logic Application
+          const orderId = row.orderId!;
+          const currentStatus = row.orderStatus;
+          const previousStatusData = this.orderStatusHistory.get(orderId);
+          
+          // Update status history
+          this.orderStatusHistory.set(orderId, {
+            status: currentStatus,
+            timestamp: Date.now()
+          });
 
-        // Check if this is a new order or status change
-        const isNewOrder = !previousStatusData;
-        const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
+          // Check if this is a new order or status change
+          const isNewOrder = !previousStatusData;
+          const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
 
-        if (isNewOrder || statusChanged) {
-          console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
-          await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
-          processedCount++;
-        } else if (previousStatusData) {
-          // Check for reminder conditions
-          await this.checkReminderConditions(row, previousStatusData, templates, reminderDelayHours);
+          if (isNewOrder || statusChanged) {
+            console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
+            await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
+            processedCount++;
+          } else if (previousStatusData) {
+            // Check for reminder conditions
+            await this.checkReminderConditions(row, previousStatusData, templates, reminderDelayHours);
+          }
         }
       }
 
-      console.log(`✅ Processing complete: ${processedCount} processed, ${skippedCount} skipped (${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users), ${sheetData.length} total`);
+      console.log(`✅ OPTIMIZED Processing complete: ${processedCount} processed, ${skippedCount} skipped (${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users), ${sheetData.length} total`);
     } catch (error) {
       console.error('Error processing sheet data:', error);
       throw error;
@@ -259,9 +372,9 @@ export class AutomationEngine {
   }
 
   /**
-   * Stage 1: Data Sanitization & Phone Number Resolution (حسب المواصفات المصرية)
+   * ⚡ OPTIMIZED Stage 1: Data Sanitization with Caching
    */
-  private static async sanitizeAndValidateRow(row: SheetRow): Promise<{
+  private static async sanitizeAndValidateRowOptimized(row: SheetRow): Promise<{
     isValid: boolean;
     reason?: 'missing_data' | 'invalid_phone' | 'not_whatsapp_user';
     details?: string;
@@ -297,21 +410,66 @@ export class AutomationEngine {
       };
     }
 
-    // Final WhatsApp Check: التحقق من تسجيل الرقم على الواتساب
+    // ⚡ OPTIMIZED WhatsApp Check with Caching
+    const finalPhone = egyptianValidation.finalFormat;
+    const cached = this.phoneValidationCache.get(finalPhone);
+    
+    if (cached && (Date.now() - cached.lastChecked) < this.PHONE_CACHE_EXPIRATION) {
+      // Use cached result
+      this.performanceStats.cacheHits++;
+      
+      if (!cached.isRegistered) {
+        return {
+          isValid: false,
+          reason: 'not_whatsapp_user',
+          details: cached.reason || 'الرقم غير مسجل على الواتساب (مخزن)'
+        };
+      }
+      
+      return {
+        isValid: true,
+        finalPhone: cached.processedPhone
+      };
+    }
+
+    // Cache miss - need to validate with WhatsApp
+    this.performanceStats.cacheMisses++;
+    this.performanceStats.whatsappApiCalls++;
+    
     const whatsapp = WhatsAppService.getInstance();
-    const whatsappValidation = await whatsapp.validatePhoneNumber(egyptianValidation.finalFormat);
+    const whatsappStatus = whatsapp.getStatus();
+    
+    if (!whatsappStatus.isConnected) {
+      // If WhatsApp is not connected, assume valid to avoid blocking
+      console.log(`⚠️ WhatsApp not connected, assuming phone ${finalPhone} is valid`);
+      return {
+        isValid: true,
+        finalPhone: finalPhone
+      };
+    }
+    
+    const whatsappValidation = await whatsapp.validatePhoneNumber(finalPhone);
+    
+    // Cache the result
+    this.phoneValidationCache.set(finalPhone, {
+      isValid: whatsappValidation.isValid,
+      isRegistered: whatsappValidation.isRegistered,
+      processedPhone: whatsappValidation.processedNumber,
+      lastChecked: Date.now(),
+      reason: whatsappValidation.error
+    });
     
     if (!whatsappValidation.isRegistered) {
       return {
         isValid: false,
         reason: 'not_whatsapp_user',
-        details: 'الرقم غير مسجل على الواتساب'
+        details: whatsappValidation.error || 'الرقم غير مسجل على الواتساب'
       };
     }
 
     return {
       isValid: true,
-      finalPhone: egyptianValidation.finalFormat
+      finalPhone: whatsappValidation.processedNumber
     };
   }
 
@@ -495,7 +653,6 @@ export class AutomationEngine {
       const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
       
       console.log(reason);
-      console.log(`📊 إحصائيات منع التكرار: ${this.duplicatePreventionStats.totalDuplicatesPrevented} رسالة مكررة تم منعها`);
 
       return {
         shouldSend: false,
@@ -1156,9 +1313,9 @@ export class AutomationEngine {
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
 
-      // المرحلة 2: المعالجة العادية
-      console.log('🔄 Starting regular order processing...');
-      await this.processSheetData();
+      // المرحلة 2: المعالجة العادية المحسنة
+      console.log('🔄 Starting OPTIMIZED order processing...');
+      await this.processSheetDataOptimized();
 
       return {
         emptyStatusResult,
@@ -1219,5 +1376,26 @@ export class AutomationEngine {
       trackedUpdatedOrders: this.updatedFromEmptyStatus.size,
       recentUpdates: recentUpdates.sort((a, b) => b.timestamp - a.timestamp)
     };
+  }
+
+  // Get performance statistics
+  static getPerformanceStats(): any {
+    return {
+      ...this.performanceStats,
+      cacheSize: this.phoneValidationCache.size,
+      cacheHitRatio: this.performanceStats.cacheHits / (this.performanceStats.cacheHits + this.performanceStats.cacheMisses),
+      duplicatePreventionStats: this.duplicatePreventionStats
+    };
+  }
+
+  // Clear caches (for testing/debugging)
+  static clearCaches(): void {
+    this.phoneValidationCache.clear();
+    this.sentMessages.clear();
+    this.duplicateAttempts.clear();
+    this.performanceStats.cacheHits = 0;
+    this.performanceStats.cacheMisses = 0;
+    this.performanceStats.whatsappApiCalls = 0;
+    console.log('✅ All caches cleared');
   }
 } 
