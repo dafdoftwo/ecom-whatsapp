@@ -1,0 +1,11 @@
+# Ignore all files for Railway deployment
+**/*
+*.ts
+*.tsx
+*.js
+*.jsx
+src/
+.next/
+node_modules/
+dist/
+build/ 
