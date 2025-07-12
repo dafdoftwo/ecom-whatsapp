@@ -102,28 +102,131 @@ export class AutomationEngine {
     try {
       console.log('🚀 Starting OPTIMIZED Egyptian WhatsApp automation engine...');
       
+      // Reset any previous state
+      this.isRunning = false;
+      if (this.intervalId) {
+        clearInterval(this.intervalId);
+        this.intervalId = null;
+      }
+      
       // Log supported statuses for debugging
       this.logSupportedStatuses();
       
       // Initialize cache cleanup timer
       this.initializeCacheCleanup();
       
+      // STEP 1: Initialize Queue Service with error handling
+      console.log('🔄 Step 1: Initializing queue service...');
+      try {
+        await QueueService.initialize();
+        console.log('✅ Queue service initialized successfully');
+      } catch (queueError) {
+        console.warn('⚠️ Queue service initialization failed, continuing with local fallback:', queueError);
+        // Don't fail the entire startup for queue issues
+      }
+      
+      // STEP 2: Validate Essential Services
+      console.log('🔍 Step 2: Validating essential services...');
+      
+      // Check Google Sheets configuration
+      try {
+        const sheetsValidation = await GoogleSheetsService.validateConfiguration();
+        if (!sheetsValidation.isValid) {
+          throw new Error(`Google Sheets validation failed: ${sheetsValidation.errors.join(', ')}`);
+        }
+        console.log('✅ Google Sheets configuration validated');
+      } catch (sheetsError) {
+        console.error('❌ Google Sheets validation failed:', sheetsError);
+        throw new Error(`Cannot start automation: Google Sheets configuration invalid - ${sheetsError instanceof Error ? sheetsError.message : 'Unknown error'}`);
+      }
+      
+      // Check basic configuration
+      try {
+        const configHealth = await ConfigService.getConfigHealth();
+        if (!configHealth.google.configured) {
+          throw new Error('Google configuration is not complete');
+        }
+        if (!configHealth.messages.valid) {
+          throw new Error('Message templates are invalid or missing');
+        }
+        console.log('✅ Basic configuration validated');
+      } catch (configError) {
+        console.error('❌ Configuration validation failed:', configError);
+        throw new Error(`Cannot start automation: Configuration invalid - ${configError instanceof Error ? configError.message : 'Unknown error'}`);
+      }
+      
+      // STEP 3: Test Data Access
+      console.log('📊 Step 3: Testing data access...');
+      try {
+        const testData = await GoogleSheetsService.getSheetData();
+        console.log(`✅ Data access successful - found ${testData.length} orders`);
+        if (testData.length === 0) {
+          console.log('⚠️ No orders found - system will wait for data');
+        }
+      } catch (dataError) {
+        console.error('❌ Data access test failed:', dataError);
+        throw new Error(`Cannot start automation: Unable to access Google Sheets data - ${dataError instanceof Error ? dataError.message : 'Unknown error'}`);
+      }
+      
+      // STEP 4: Check WhatsApp (Warning only, not blocking)
+      console.log('📱 Step 4: Checking WhatsApp connection...');
+      try {
+        const whatsapp = WhatsAppService.getInstance();
+        const status = whatsapp.getStatus();
+        if (status.isConnected) {
+          console.log('✅ WhatsApp is connected and ready');
+        } else {
+          console.log('⚠️ WhatsApp not connected - messages will be queued until connection is established');
+        }
+      } catch (whatsappError) {
+        console.warn('⚠️ WhatsApp status check failed, but continuing:', whatsappError);
+      }
+      
+      // STEP 5: Pre-warm phone validation cache
+      console.log('🔥 Step 5: Pre-warming phone validation cache...');
+      try {
+        await this.preWarmPhoneCache();
+        console.log('✅ Phone validation cache pre-warmed successfully');
+      } catch (cacheError) {
+        console.warn('⚠️ Cache pre-warming failed, but continuing:', cacheError);
+      }
+      
+      // STEP 6: Start the processing loop
+      console.log('🚀 Step 6: Starting processing loop...');
       this.isRunning = true;
       
-      // Initialize queue service
-      await QueueService.initialize();
+      try {
+        await this.startProcessingLoop();
+        console.log('✅ Processing loop started successfully');
+      } catch (loopError) {
+        this.isRunning = false;
+        console.error('❌ Failed to start processing loop:', loopError);
+        throw new Error(`Cannot start automation: Processing loop failed - ${loopError instanceof Error ? loopError.message : 'Unknown error'}`);
+      }
       
-      // Pre-warm phone validation cache
-      await this.preWarmPhoneCache();
-      
-      // Start the main processing loop
-      await this.startProcessingLoop();
+      // STEP 7: Final validation
+      console.log('🎯 Step 7: Final validation...');
+      if (!this.isRunning) {
+        throw new Error('Automation engine failed to start properly');
+      }
       
       console.log('✅ OPTIMIZED Egyptian automation engine started successfully');
+      console.log('🎯 System is now ready to process orders automatically');
+      console.log('📊 Next processing cycle will begin in 30 seconds');
+      
     } catch (error) {
       console.error('❌ Error starting automation engine:', error);
+      
+      // Clean up on failure
       this.isRunning = false;
-      throw error;
+      if (this.intervalId) {
+        clearInterval(this.intervalId);
+        this.intervalId = null;
+      }
+      
+      // Re-throw with more context
+      const errorMessage = error instanceof Error ? error.message : 'Unknown startup error';
+      throw new Error(`Automation Engine Startup Failed: ${errorMessage}`);
     }
   }
 
@@ -258,18 +361,48 @@ export class AutomationEngine {
     const timingConfig = await ConfigService.getTimingConfig();
     const checkInterval = (timingConfig.checkIntervalSeconds || 30) * 1000;
     
+    console.log(`⏰ Processing loop configured with ${checkInterval / 1000} second intervals`);
+    
     const processLoop = async () => {
+      // Check if engine is still supposed to be running
       if (!this.isRunning) {
-        console.log('🛑 Automation engine stopped, exiting loop');
+        console.log('🛑 Automation engine stopped, exiting processing loop');
         return;
       }
 
+      let processingSuccess = false;
+      
       try {
         this.performanceStats.processingStartTime = Date.now();
         console.log('🔄 Egyptian automation engine processing cycle (OPTIMIZED)...');
         
-        // استخدام المعالجة المحسنة
+        // Pre-processing checks
+        console.log('🔍 Pre-processing system checks...');
+        
+        // Check Google Sheets availability
+        try {
+          await GoogleSheetsService.getSheetData();
+        } catch (sheetsError) {
+          console.error('❌ Google Sheets unavailable during processing:', sheetsError);
+          throw new Error(`Google Sheets access failed: ${sheetsError instanceof Error ? sheetsError.message : 'Unknown error'}`);
+        }
+        
+        // Check WhatsApp status (warning only)
+        try {
+          const whatsapp = WhatsAppService.getInstance();
+          const status = whatsapp.getStatus();
+          if (!status.isConnected) {
+            console.log('⚠️ WhatsApp disconnected - messages will be queued');
+          }
+        } catch (whatsappError) {
+          console.warn('⚠️ WhatsApp status check failed during processing:', whatsappError);
+        }
+        
+        // Start main processing
+        console.log('🚀 Starting optimized order processing...');
         await this.processSheetDataOptimized();
+        
+        processingSuccess = true;
         
         // Update performance stats
         const processingTime = Date.now() - this.performanceStats.processingStartTime;
@@ -279,21 +412,53 @@ export class AutomationEngine {
           (this.performanceStats.avgProcessingTime * (this.performanceStats.totalProcessingCycles - 1) + processingTime) / 
           this.performanceStats.totalProcessingCycles;
         
-        console.log(`⚡ Processing completed in ${processingTime}ms (avg: ${Math.round(this.performanceStats.avgProcessingTime)}ms)`);
+        console.log(`⚡ Processing completed successfully in ${processingTime}ms (avg: ${Math.round(this.performanceStats.avgProcessingTime)}ms)`);
         console.log(`📊 Cache stats: ${this.performanceStats.cacheHits} hits, ${this.performanceStats.cacheMisses} misses, ${this.performanceStats.whatsappApiCalls} API calls`);
         
       } catch (error) {
         console.error('❌ Error in processing cycle:', error);
+        
+        // Check if this is a critical error that should stop the engine
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        if (errorMessage.includes('Google Sheets access failed') && 
+            errorMessage.includes('Authentication')) {
+          console.error('🚨 Critical authentication error - stopping automation engine');
+          this.isRunning = false;
+          return;
+        }
+        
+        // For other errors, log and continue
+        console.log('⚠️ Non-critical error, continuing with next cycle...');
       }
 
-      // Schedule next processing
+      // Schedule next processing cycle only if engine is still running
       if (this.isRunning) {
-        this.intervalId = setTimeout(processLoop, checkInterval);
+        const nextCycleTime = processingSuccess ? checkInterval : Math.min(checkInterval * 2, 60000); // Backoff on failure
+        console.log(`⏰ Next processing cycle in ${nextCycleTime / 1000} seconds...`);
+        
+        this.intervalId = setTimeout(() => {
+          processLoop().catch(error => {
+            console.error('❌ Critical error in processing loop:', error);
+            console.log('🛑 Stopping automation engine due to critical error');
+            this.isRunning = false;
+          });
+        }, nextCycleTime);
+      } else {
+        console.log('🛑 Processing loop stopped - engine is no longer running');
       }
     };
 
-    // Start the first processing cycle
-    this.intervalId = setTimeout(processLoop, 1000); // Start after 1 second
+    // Start the first processing cycle with a small delay
+    console.log('🚀 Starting first processing cycle in 5 seconds...');
+    this.intervalId = setTimeout(() => {
+      processLoop().catch(error => {
+        console.error('❌ Critical error in initial processing loop:', error);
+        console.log('🛑 Stopping automation engine due to critical startup error');
+        this.isRunning = false;
+        throw error;
+      });
+    }, 5000); // 5 second delay for initial startup
   }
 
   private static async processSheetDataOptimized(): Promise<void> {
