@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import QRCodeDisplay from '@/components/QRCodeDisplay';
+import WhatsAppSessionManager from '@/components/WhatsAppSessionManager';
 
 interface AutomationStats {
   engine: {
@@ -389,26 +390,11 @@ export default function Dashboard() {
           <div className="card mb-4">
             <div className="card-header">
               <h3>📱 ربط الواتساب</h3>
-              <p style={{ marginBottom: '0', color: 'var(--gray-600)' }}>امسح QR كود لربط حسابك بالنظام</p>
+              <p style={{ marginBottom: '0', color: 'var(--gray-600)' }}>إدارة احترافية لجلسة الواتساب</p>
             </div>
             <div className="card-body">
-              <div className="grid grid-cols-1" style={{ gridTemplateColumns: '1fr' }}>
-                <div>
-            <QRCodeDisplay onConnectionSuccess={() => loadDashboardData()} />
-                  </div>
-                  <div>
-                  <h4>خطوات الربط:</h4>
-                  <ol style={{ paddingRight: '1.5rem' }}>
-                    <li>افتح تطبيق الواتساب على هاتفك</li>
-                    <li>اذهب إلى الإعدادات ← الأجهزة المربوطة</li>
-                    <li>اضغط على "ربط جهاز" وامسح الكود</li>
-                  </ol>
-                  <div className="alert alert-warning">
-                    <strong>ملاحظة:</strong> تأكد من اتصال الإنترنت والكود يتجدد كل 20 ثانية
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <WhatsAppSessionManager onConnectionSuccess={() => loadDashboardData()} />
+            </div>
           </div>
         )}
 
