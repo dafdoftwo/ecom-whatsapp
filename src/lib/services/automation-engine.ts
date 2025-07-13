@@ -78,6 +78,9 @@ export class AutomationEngine {
   // Cache configuration
   private static readonly PHONE_CACHE_EXPIRATION = 1000 * 60 * 60 * 24; // 24 hours
 
+  // Empty status tracking
+  private static updatedFromEmptyStatus = new Set<string>();
+
   // Performance monitoring
   private static performanceStats = {
     processingStartTime: 0,
@@ -416,11 +419,18 @@ export class AutomationEngine {
     try {
       console.log('📊 Starting optimized sheet data processing...');
       
-      // Get configuration
-      const templates = await ConfigService.getMessageTemplates();
+      // Get configuration - FIX: Extract templates from the response
+      const templatesConfig = await ConfigService.getMessageTemplates();
+      const templates = templatesConfig.templates; // Extract the actual templates
       const timingConfig = await ConfigService.getTimingConfig();
       const reminderDelayHours = timingConfig.reminderDelayHours || 24;
       const rejectedOfferDelayHours = timingConfig.rejectedOfferDelayHours || 24;
+      
+      // Validate templates
+      if (!templates || typeof templates !== 'object') {
+        console.error('❌ Invalid templates configuration:', templates);
+        throw new Error('Message templates are not properly configured');
+      }
       
       // Get sheet data
       const sheetData = await GoogleSheetsService.getSheetData();
@@ -1014,23 +1024,41 @@ export class AutomationEngine {
   }
 
   private static replaceMessageVariables(template: string, row: SheetRow): string {
-    return template
-      .replace(/\{name\}/g, row.name || 'عميل عزيز')
-      .replace(/\{product\}/g, row.productName || 'المنتج')
-      .replace(/\{price\}/g, row.totalPrice?.toString() || 'السعر')
-      .replace(/\{orderId\}/g, row.orderId || 'رقم الطلب')
-      .replace(/\{phone\}/g, row.processedPhone || row.phone || 'رقم الهاتف')
-      .replace(/\{whatsappNumber\}/g, row.whatsappNumber || row.processedPhone || row.phone || 'رقم الواتساب')
-      .replace(/\{address\}/g, row.address || 'العنوان')
-      .replace(/\{city\}/g, row.governorate || 'المدينة')
-      .replace(/\{governorate\}/g, row.governorate || 'المحافظة')
-      .replace(/\{orderStatus\}/g, row.orderStatus || 'حالة الطلب')
-      .replace(/\{notes\}/g, row.notes || '')
-      .replace(/\{orderDate\}/g, row.orderDate || 'تاريخ الطلب')
-      .replace(/\{deliveryDate\}/g, row.orderDate || 'تاريخ التسليم')
-      .replace(/\{trackingNumber\}/g, row.orderId || 'رقم التتبع')
-      .replace(/\{quantity\}/g, row.quantity || '1')
-      .replace(/\{total\}/g, row.totalPrice?.toString() || row.totalPrice?.toString() || 'الإجمالي');
+    // Validate input parameters
+    if (!template || typeof template !== 'string') {
+      console.error('❌ Invalid template provided to replaceMessageVariables:', template);
+      return 'رسالة افتراضية: مرحباً {name}، شكراً لطلبك رقم {orderId}';
+    }
+    
+    if (!row) {
+      console.error('❌ Invalid row data provided to replaceMessageVariables');
+      return template;
+    }
+    
+    try {
+      return template
+        .replace(/\{name\}/g, row.name || 'عميل عزيز')
+        .replace(/\{product\}/g, row.productName || 'المنتج')
+        .replace(/\{price\}/g, row.totalPrice?.toString() || 'السعر')
+        .replace(/\{orderId\}/g, row.orderId || 'رقم الطلب')
+        .replace(/\{phone\}/g, row.processedPhone || row.phone || 'رقم الهاتف')
+        .replace(/\{whatsappNumber\}/g, row.whatsappNumber || row.processedPhone || row.phone || 'رقم الواتساب')
+        .replace(/\{address\}/g, row.address || 'العنوان')
+        .replace(/\{city\}/g, row.governorate || 'المدينة')
+        .replace(/\{governorate\}/g, row.governorate || 'المحافظة')
+        .replace(/\{orderStatus\}/g, row.orderStatus || 'حالة الطلب')
+        .replace(/\{notes\}/g, row.notes || '')
+        .replace(/\{orderDate\}/g, row.orderDate || 'تاريخ الطلب')
+        .replace(/\{deliveryDate\}/g, row.orderDate || 'تاريخ التسليم')
+        .replace(/\{trackingNumber\}/g, row.orderId || 'رقم التتبع')
+        .replace(/\{quantity\}/g, row.quantity || '1')
+        .replace(/\{total\}/g, row.totalPrice?.toString() || 'الإجمالي');
+    } catch (error) {
+      console.error('❌ Error in replaceMessageVariables:', error);
+      console.error('Template:', template);
+      console.error('Row data:', JSON.stringify(row, null, 2));
+      return `خطأ في معالجة الرسالة للعميل ${row.name || 'غير محدد'}`;
+    }
   }
 
   private static logSupportedStatuses(): void {
@@ -1413,5 +1441,10 @@ export class AutomationEngine {
     this.performanceStats.cacheMisses = 0;
     this.performanceStats.whatsappApiCalls = 0;
     console.log('✅ All caches cleared');
+  }
+
+  // Public method for testing message variable replacement
+  static testMessageReplacement(template: string, row: any): string {
+    return this.replaceMessageVariables(template, row);
   }
 } 
