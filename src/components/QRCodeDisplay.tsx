@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { RefreshCw, QrCode, CheckCircle, AlertCircle } from 'lucide-react';
+import { RefreshCw, QrCode, CheckCircle, Trash2, AlertCircle } from 'lucide-react';
 
 interface QRCodeDisplayProps {
   onConnectionSuccess?: () => void;
@@ -15,6 +15,7 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [message, setMessage] = useState<string>('');
+  const [showConfirmClear, setShowConfirmClear] = useState(false);
 
   const fetchQRCode = async () => {
     setIsLoading(true);
@@ -42,6 +43,60 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
     } catch (err) {
       setError('خطأ في الاتصال بالخادم');
       console.error('Error fetching QR code:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const regenerateQRCode = async () => {
+    setIsLoading(true);
+    setError(null);
+    setMessage('جاري إعادة توليد QR Code...');
+    
+    try {
+      const response = await fetch('/api/whatsapp/regenerate-qr', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success && data.qrCode) {
+        setQrCode(data.qrCode);
+        setIsConnected(false);
+        setMessage('تم توليد QR Code جديد - امسح الكود للاتصال');
+      } else {
+        setError(data.message || 'فشل في إعادة توليد QR Code');
+      }
+    } catch (err) {
+      setError('خطأ في إعادة توليد QR Code');
+      console.error('Error regenerating QR code:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const clearSession = async () => {
+    setIsLoading(true);
+    setError(null);
+    setShowConfirmClear(false);
+    
+    try {
+      const response = await fetch('/api/whatsapp/clear-session', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setIsConnected(false);
+        setQrCode(null);
+        setMessage('تم حذف الجلسة بنجاح - جاري توليد QR Code جديد...');
+        // Wait a bit then fetch new QR
+        setTimeout(() => fetchQRCode(), 2000);
+      } else {
+        setError(data.message || 'فشل في حذف الجلسة');
+      }
+    } catch (err) {
+      setError('خطأ في حذف الجلسة');
+      console.error('Error clearing session:', err);
     } finally {
       setIsLoading(false);
     }
@@ -76,6 +131,42 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
     fetchQRCode();
   }, []);
 
+  // Confirmation dialog for clearing session
+  if (showConfirmClear) {
+    return (
+      <Card className="border-2 border-orange-200 bg-orange-50">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-orange-800">
+            <AlertCircle className="h-5 w-5" />
+            تأكيد حذف الجلسة
+          </CardTitle>
+          <CardDescription className="text-orange-600">
+            هل أنت متأكد من حذف جلسة الواتساب الحالية؟ ستحتاج إلى مسح QR Code جديد.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-2">
+            <Button 
+              variant="danger" 
+              onClick={clearSession}
+              disabled={isLoading}
+            >
+              <Trash2 className="h-4 w-4 ml-1" />
+              نعم، احذف الجلسة
+            </Button>
+            <Button 
+              variant="secondary" 
+              onClick={() => setShowConfirmClear(false)}
+              disabled={isLoading}
+            >
+              إلغاء
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   if (isConnected) {
     return (
       <Card className="border-2 border-green-200 bg-green-50">
@@ -88,6 +179,19 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
             النظام متصل بالواتساب ويعمل بشكل طبيعي
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="flex gap-2">
+            <Button 
+              variant="warning" 
+              size="sm"
+              onClick={() => setShowConfirmClear(true)}
+              className="text-orange-600 hover:text-orange-700"
+            >
+              <Trash2 className="h-4 w-4 ml-1" />
+              حذف الجلسة الحالية
+            </Button>
+          </div>
+        </CardContent>
       </Card>
     );
   }
@@ -105,15 +209,26 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button 
-            onClick={fetchQRCode}
-            disabled={isLoading}
-            variant="outline"
-            className="border-red-300 text-red-700 hover:bg-red-100"
-          >
-            <RefreshCw className={`h-4 w-4 ml-1 ${isLoading ? 'animate-spin' : ''}`} />
-            إعادة المحاولة
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              variant="secondary" 
+              size="sm"
+              onClick={fetchQRCode}
+              disabled={isLoading}
+            >
+              <RefreshCw className={`h-4 w-4 ml-1 ${isLoading ? 'animate-spin' : ''}`} />
+              المحاولة مرة أخرى
+            </Button>
+            <Button 
+              variant="warning" 
+              size="sm"
+              onClick={() => setShowConfirmClear(true)}
+              className="text-orange-600 hover:text-orange-700"
+            >
+              <Trash2 className="h-4 w-4 ml-1" />
+              حذف الجلسة
+            </Button>
+          </div>
         </CardContent>
       </Card>
     );
@@ -169,15 +284,28 @@ export default function QRCodeDisplay({ onConnectionSuccess }: QRCodeDisplayProp
             </div>
           )}
           
-          <Button 
-            variant="outline" 
-            size="sm"
-            onClick={fetchQRCode}
-            disabled={isLoading}
-          >
-            <RefreshCw className={`h-4 w-4 ml-1 ${isLoading ? 'animate-spin' : ''}`} />
-            {isLoading ? 'جاري التحضير...' : 'تحديث QR Code'}
-          </Button>
+          <div className="flex gap-2 flex-wrap justify-center">
+            <Button 
+              variant="primary" 
+              size="sm"
+              onClick={regenerateQRCode}
+              disabled={isLoading}
+            >
+              <RefreshCw className={`h-4 w-4 ml-1 ${isLoading ? 'animate-spin' : ''}`} />
+              {isLoading ? 'جاري التحضير...' : 'إعادة توليد QR Code'}
+            </Button>
+            
+            <Button 
+              variant="warning" 
+              size="sm"
+              onClick={() => setShowConfirmClear(true)}
+              disabled={isLoading}
+              className="text-orange-600 hover:text-orange-700"
+            >
+              <Trash2 className="h-4 w-4 ml-1" />
+              حذف الجلسة
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
