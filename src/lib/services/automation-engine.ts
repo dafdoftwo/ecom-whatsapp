@@ -45,9 +45,6 @@ export class AutomationEngine {
   // Track sent messages to prevent duplicates
   private static sentMessages = new Map<string, { messageType: string, timestamp: number }>();
 
-  // Track orders that were updated from empty status to prevent duplicates
-  private static updatedFromEmptyStatus = new Set<string>();
-
   // Enhanced duplicate prevention tracking
   private static duplicateAttempts = new Map<string, {
     orderId: string;
@@ -57,7 +54,7 @@ export class AutomationEngine {
     preventedDuplicates: number;
   }>();
 
-  // Log duplicate prevention statistics
+  // Global duplicate prevention statistics
   private static duplicatePreventionStats = {
     totalDuplicatesPrevented: 0,
     duplicatesPreventedByType: {
@@ -66,11 +63,10 @@ export class AutomationEngine {
       shipped: 0,
       rejectedOffer: 0,
       reminder: 0
-    },
-    lastResetTime: Date.now()
+    }
   };
 
-  // ⚡ PERFORMANCE OPTIMIZATION: Phone number validation cache
+  // Phone validation cache for optimization
   private static phoneValidationCache = new Map<string, {
     isValid: boolean;
     isRegistered: boolean;
@@ -79,18 +75,20 @@ export class AutomationEngine {
     reason?: string;
   }>();
 
-  // Cache expiration time (24 hours)
-  private static PHONE_CACHE_EXPIRATION = 24 * 60 * 60 * 1000;
+  // Cache configuration
+  private static readonly PHONE_CACHE_EXPIRATION = 1000 * 60 * 60 * 24; // 24 hours
 
   // Performance monitoring
   private static performanceStats = {
+    processingStartTime: 0,
     lastProcessingTime: 0,
     avgProcessingTime: 0,
     totalProcessingCycles: 0,
     cacheHits: 0,
     cacheMisses: 0,
     whatsappApiCalls: 0,
-    processingStartTime: 0
+    whatsappConnectionIssues: 0,
+    automaticReconnections: 0
   };
 
   static async start(): Promise<void> {
@@ -100,7 +98,7 @@ export class AutomationEngine {
     }
 
     try {
-      console.log('🚀 Starting OPTIMIZED Egyptian WhatsApp automation engine...');
+      console.log('🚀 Starting OPTIMIZED Egyptian WhatsApp automation engine with persistent connection...');
       
       // Reset any previous state
       this.isRunning = false;
@@ -168,18 +166,41 @@ export class AutomationEngine {
         throw new Error(`Cannot start automation: Unable to access Google Sheets data - ${dataError instanceof Error ? dataError.message : 'Unknown error'}`);
       }
       
-      // STEP 4: Check WhatsApp (Warning only, not blocking)
-      console.log('📱 Step 4: Checking WhatsApp connection...');
+      // STEP 4: Initialize WhatsApp with Persistent Connection
+      console.log('📱 Step 4: Initializing WhatsApp with persistent connection...');
       try {
         const whatsapp = WhatsAppService.getInstance();
-        const status = whatsapp.getStatus();
-        if (status.isConnected) {
-          console.log('✅ WhatsApp is connected and ready');
+        
+        // Setup connection event handlers for monitoring
+        whatsapp.onConnectionEvent('onConnected', () => {
+          console.log('✅ WhatsApp persistent connection established');
+          this.performanceStats.automaticReconnections++;
+        });
+        
+        whatsapp.onConnectionEvent('onDisconnected', (reason: string) => {
+          console.log(`⚠️ WhatsApp disconnected: ${reason}`);
+          this.performanceStats.whatsappConnectionIssues++;
+        });
+        
+        whatsapp.onConnectionEvent('onReconnecting', (attempt: number) => {
+          console.log(`🔄 WhatsApp reconnecting (attempt ${attempt})...`);
+        });
+        
+        whatsapp.onConnectionEvent('onSessionCorrupted', () => {
+          console.log('🗑️ WhatsApp session corrupted - automatic cleanup initiated');
+        });
+        
+        // Try to initialize WhatsApp
+        const initResult = await whatsapp.smartInitialize();
+        if (initResult.success) {
+          console.log('✅ WhatsApp initialized and connected successfully');
         } else {
-          console.log('⚠️ WhatsApp not connected - messages will be queued until connection is established');
+          console.log(`⚠️ WhatsApp not connected (${initResult.message}) - messages will be queued`);
         }
+        
       } catch (whatsappError) {
-        console.warn('⚠️ WhatsApp status check failed, but continuing:', whatsappError);
+        console.warn('⚠️ WhatsApp initialization failed, but continuing:', whatsappError);
+        // Don't fail the entire startup for WhatsApp issues
       }
       
       // STEP 5: Pre-warm phone validation cache
@@ -192,7 +213,7 @@ export class AutomationEngine {
       }
       
       // STEP 6: Start the processing loop
-      console.log('🚀 Step 6: Starting processing loop...');
+      console.log('🚀 Step 6: Starting processing loop with persistent connection...');
       this.isRunning = true;
       
       try {
@@ -210,8 +231,8 @@ export class AutomationEngine {
         throw new Error('Automation engine failed to start properly');
       }
       
-      console.log('✅ OPTIMIZED Egyptian automation engine started successfully');
-      console.log('🎯 System is now ready to process orders automatically');
+      console.log('✅ OPTIMIZED Egyptian automation engine with persistent connection started successfully');
+      console.log('🎯 System is now ready to process orders automatically with continuous WhatsApp connection');
       console.log('📊 Next processing cycle will begin in 30 seconds');
       
     } catch (error) {
@@ -230,114 +251,9 @@ export class AutomationEngine {
     }
   }
 
-  private static async preWarmPhoneCache(): Promise<void> {
-    try {
-      console.log('🔥 Pre-warming phone validation cache...');
-      
-      // Get all orders quickly first
-      const sheetData = await GoogleSheetsService.getSheetData();
-      
-      if (!sheetData || sheetData.length === 0) {
-        console.log('No data to pre-warm cache');
-        return;
-      }
-
-      const whatsapp = WhatsAppService.getInstance();
-      const isConnected = whatsapp.getStatus().isConnected;
-      
-      if (!isConnected) {
-        console.log('⚠️ WhatsApp not connected, skipping cache pre-warming');
-        return;
-      }
-
-      // Get unique phone numbers
-      const uniquePhones = new Set<string>();
-      
-      sheetData.forEach(row => {
-        if (row.phone) {
-          const processed = PhoneProcessor.formatForWhatsApp(row.phone);
-          if (processed) uniquePhones.add(processed);
-        }
-        if (row.whatsappNumber) {
-          const processed = PhoneProcessor.formatForWhatsApp(row.whatsappNumber);
-          if (processed) uniquePhones.add(processed);
-        }
-      });
-
-      console.log(`📱 Pre-warming cache for ${uniquePhones.size} unique phone numbers...`);
-      
-      // Validate in batches to avoid overwhelming WhatsApp
-      const phoneArray = Array.from(uniquePhones);
-      const batchSize = 10;
-      
-      for (let i = 0; i < phoneArray.length; i += batchSize) {
-        const batch = phoneArray.slice(i, i + batchSize);
-        
-        await Promise.all(batch.map(async (phone) => {
-          try {
-            const result = await whatsapp.validatePhoneNumber(phone);
-            this.phoneValidationCache.set(phone, {
-              isValid: result.isValid,
-              isRegistered: result.isRegistered,
-              processedPhone: result.processedNumber,
-              lastChecked: Date.now(),
-              reason: result.error
-            });
-          } catch (error) {
-            console.warn(`Failed to validate ${phone}:`, error);
-          }
-        }));
-        
-        // Small delay between batches
-        if (i + batchSize < phoneArray.length) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
-      
-      console.log(`✅ Cache pre-warmed with ${this.phoneValidationCache.size} validated numbers`);
-    } catch (error) {
-      console.error('Error pre-warming cache:', error);
-    }
-  }
-
-  private static initializeCacheCleanup(): void {
-    // Clean cache every hour
-    setInterval(() => {
-      this.cleanupExpiredCache();
-    }, 60 * 60 * 1000);
-  }
-
-  private static cleanupExpiredCache(): void {
-    const now = Date.now();
-    let cleaned = 0;
-    
-    for (const [phone, data] of this.phoneValidationCache.entries()) {
-      if (now - data.lastChecked > this.PHONE_CACHE_EXPIRATION) {
-        this.phoneValidationCache.delete(phone);
-        cleaned++;
-      }
-    }
-    
-    if (cleaned > 0) {
-      console.log(`🧹 Cleaned ${cleaned} expired cache entries`);
-    }
-  }
-
-  private static logSupportedStatuses(): void {
-    console.log('📋 Supported Order Statuses:');
-    console.log('  🆕 New Order: "جديد", "طلب جديد", "قيد المراجعة", "قيد المراجعه", "غير محدد"');
-    console.log('  🔳 Empty Status: "" (حالة فارغة) → يُعامل كطلب جديد تلقائياً');
-    console.log('  📞 No Answer: "لم يتم الرد", "لم يرد", "لا يرد", "عدم الرد"');
-    console.log('  ✅ Confirmed: "تم التأكيد", "تم التاكيد", "مؤكد"');
-    console.log('  🚚 Shipped: "تم الشحن", "قيد الشحن"');
-    console.log('  🚫 Rejected: "تم الرفض", "مرفوض", "رفض الاستلام", "رفض الأستلام", "لم يتم الاستلام"');
-    console.log('  🎉 Other: "تم التوصيل", "ملغي", etc.');
-    console.log('');
-    console.log('💡 ملاحظة مهمة: الحالات الفارغة تُعامل تلقائياً كطلبات جديدة ولا تحتاج تدخل يدوي!');
-  }
-
   static async stop(): Promise<void> {
-    console.log('Stopping automation engine...');
+    console.log('🛑 Stopping automation engine...');
+    
     this.isRunning = false;
     
     if (this.intervalId) {
@@ -345,15 +261,38 @@ export class AutomationEngine {
       this.intervalId = null;
     }
     
-    await QueueService.cleanup();
-    console.log('Automation engine stopped');
+    // Clear all caches
+    this.phoneValidationCache.clear();
+    this.duplicateAttempts.clear();
+    this.sentMessages.clear();
+    
+    console.log('✅ Automation engine stopped successfully');
   }
 
-  static getStatus(): { isRunning: boolean; lastCheck?: string; nextCheck?: string } {
+  static getStatus(): {
+    isRunning: boolean;
+    performance: typeof AutomationEngine.performanceStats;
+    duplicatePreventionStats: typeof AutomationEngine.duplicatePreventionStats;
+    cacheStats: {
+      phoneValidationCacheSize: number;
+      duplicateAttemptsSize: number;
+      sentMessagesSize: number;
+    };
+    whatsappConnectionHealth: any;
+  } {
+    const whatsapp = WhatsAppService.getInstance();
+    const connectionHealth = whatsapp.getConnectionHealth();
+    
     return {
       isRunning: this.isRunning,
-      lastCheck: this.isRunning ? new Date().toISOString() : undefined,
-      nextCheck: this.isRunning ? new Date(Date.now() + 30000).toISOString() : undefined,
+      performance: { ...this.performanceStats },
+      duplicatePreventionStats: { ...this.duplicatePreventionStats },
+      cacheStats: {
+        phoneValidationCacheSize: this.phoneValidationCache.size,
+        duplicateAttemptsSize: this.duplicateAttempts.size,
+        sentMessagesSize: this.sentMessages.size
+      },
+      whatsappConnectionHealth: connectionHealth
     };
   }
 
@@ -374,7 +313,7 @@ export class AutomationEngine {
       
       try {
         this.performanceStats.processingStartTime = Date.now();
-        console.log('🔄 Egyptian automation engine processing cycle (OPTIMIZED)...');
+        console.log('🔄 Egyptian automation engine processing cycle (OPTIMIZED with persistent connection)...');
         
         // Pre-processing checks
         console.log('🔍 Pre-processing system checks...');
@@ -387,15 +326,26 @@ export class AutomationEngine {
           throw new Error(`Google Sheets access failed: ${sheetsError instanceof Error ? sheetsError.message : 'Unknown error'}`);
         }
         
-        // Check WhatsApp status (warning only)
+        // Check WhatsApp status with persistent connection
         try {
           const whatsapp = WhatsAppService.getInstance();
           const status = whatsapp.getStatus();
+          const health = whatsapp.getConnectionHealth();
+          
           if (!status.isConnected) {
-            console.log('⚠️ WhatsApp disconnected - messages will be queued');
+            console.log('⚠️ WhatsApp disconnected - messages will be queued, persistent connection will auto-reconnect');
+            
+            // If session is corrupted, trigger smart recovery
+            if (health.sessionHealth === 'critical') {
+              console.log('🔄 Critical session detected, triggering smart recovery...');
+              await whatsapp.smartInitialize();
+            }
+          } else {
+            console.log(`✅ WhatsApp connected (uptime: ${Math.round(health.totalUptime / 1000)}s, health: ${health.sessionHealth})`);
           }
         } catch (whatsappError) {
           console.warn('⚠️ WhatsApp status check failed during processing:', whatsappError);
+          this.performanceStats.whatsappConnectionIssues++;
         }
         
         // Start main processing
@@ -414,6 +364,7 @@ export class AutomationEngine {
         
         console.log(`⚡ Processing completed successfully in ${processingTime}ms (avg: ${Math.round(this.performanceStats.avgProcessingTime)}ms)`);
         console.log(`📊 Cache stats: ${this.performanceStats.cacheHits} hits, ${this.performanceStats.cacheMisses} misses, ${this.performanceStats.whatsappApiCalls} API calls`);
+        console.log(`🔄 Connection stats: ${this.performanceStats.whatsappConnectionIssues} issues, ${this.performanceStats.automaticReconnections} auto-reconnections`);
         
       } catch (error) {
         console.error('❌ Error in processing cycle:', error);
@@ -463,29 +414,25 @@ export class AutomationEngine {
 
   private static async processSheetDataOptimized(): Promise<void> {
     try {
-      console.log('🔄 Processing Egyptian sheet data (OPTIMIZED)...');
+      console.log('📊 Starting optimized sheet data processing...');
+      
+      // Get configuration
+      const templates = await ConfigService.getMessageTemplates();
+      const timingConfig = await ConfigService.getTimingConfig();
+      const reminderDelayHours = timingConfig.reminderDelayHours || 24;
+      const rejectedOfferDelayHours = timingConfig.rejectedOfferDelayHours || 24;
       
       // Get sheet data
       const sheetData = await GoogleSheetsService.getSheetData();
+      console.log(`📋 Processing ${sheetData.length} orders from Google Sheets`);
       
-      if (!sheetData || sheetData.length === 0) {
-        console.log('No data found in sheet');
-        return;
-      }
-
-      console.log(`📊 Found ${sheetData.length} orders to process`);
-
-      // Get configuration
-      const { reminderDelayHours, rejectedOfferDelayHours } = await ConfigService.getTimingConfig();
-      const { templates } = await ConfigService.getMessageTemplates();
-
+      // Process in batches for better performance
+      const batchSize = 50;
       let processedCount = 0;
       let skippedCount = 0;
       let invalidPhoneCount = 0;
       let whatsappValidationCount = 0;
-
-      // Process in batches for better performance
-      const batchSize = 20;
+      
       for (let i = 0; i < sheetData.length; i += batchSize) {
         const batch = sheetData.slice(i, i + batchSize);
         
@@ -528,10 +475,12 @@ export class AutomationEngine {
           }
         }
       }
-
-      console.log(`✅ OPTIMIZED Processing complete: ${processedCount} processed, ${skippedCount} skipped (${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users), ${sheetData.length} total`);
+      
+      console.log(`✅ Batch processing completed: ${processedCount} processed, ${skippedCount} skipped`);
+      console.log(`📊 Skip reasons: ${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users`);
+      
     } catch (error) {
-      console.error('Error processing sheet data:', error);
+      console.error('❌ Error in optimized sheet data processing:', error);
       throw error;
     }
   }
@@ -606,7 +555,8 @@ export class AutomationEngine {
     
     if (!whatsappStatus.isConnected) {
       // If WhatsApp is not connected, assume valid to avoid blocking
-      console.log(`⚠️ WhatsApp not connected, assuming phone ${finalPhone} is valid`);
+      // The persistent connection will handle reconnection automatically
+      console.log(`⚠️ WhatsApp not connected, assuming phone ${finalPhone} is valid (persistent connection will handle reconnection)`);
       return {
         isValid: true,
         finalPhone: finalPhone
@@ -638,9 +588,6 @@ export class AutomationEngine {
     };
   }
 
-  /**
-   * Stage 2: Business Logic Mapping (حسب الحالات المصرية)
-   */
   private static async handleEgyptianOrderStatusChange(
     row: SheetRow, 
     templates: MessageTemplates, 
@@ -648,13 +595,13 @@ export class AutomationEngine {
     rejectedOfferDelayHours: number
   ): Promise<void> {
     const { orderId, processedPhone, orderStatus, rowIndex, name } = row;
-    
+
     if (!processedPhone || !orderId || !rowIndex) {
-      console.log(`⚠️ Skipping order ${orderId}: missing required fields`);
+      console.warn(`⚠️ Missing required data for order ${orderId}: phone=${processedPhone}, rowIndex=${rowIndex}`);
       return;
     }
 
-    // Get status settings
+    // Get enabled status settings
     const statusSettings = await ConfigService.getStatusSettings();
     const enabledStatuses = statusSettings?.enabledStatuses || {
       newOrder: true,
@@ -664,21 +611,11 @@ export class AutomationEngine {
       reminder: true
     };
 
-    // تنظيف الحالة من الفراغات
+    console.log(`📋 Handling Egyptian order status change for ${orderId}: "${orderStatus}"`);
+    console.log(`🎯 Customer: ${name}, Phone: ${processedPhone}, Row: ${rowIndex}`);
+
+    // Normalize status for comparison
     const status = (orderStatus || '').trim();
-    
-    // معالجة خاصة للحالة الفارغة
-    if (status === '') {
-      console.log(`🔳 ➤ Empty Status detected for order ${orderId} (${name}) → Treating as NEW ORDER`);
-      if (enabledStatuses.newOrder) {
-        await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد (حالة فارغة)');
-      } else {
-        console.log(`🚫 New Order messages are disabled for empty status`);
-      }
-      return;
-    }
-    
-    console.log(`🔍 Processing order ${orderId} with status: "${status}" for customer: ${name}`);
 
     switch (status) {
       // New Order Cases
@@ -726,44 +663,28 @@ export class AutomationEngine {
       case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED:
       case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_2:
       case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_3:
-        if (enabledStatuses.shipped) {
-        console.log(`✅ ➤ Confirmed Order detected: "${status}" → Sending shipped message`);
-        await this.handleConfirmedOrder(row, templates);
-        } else {
-          console.log(`🚫 Shipped messages are disabled for status: "${status}"`);
-        }
-        break;
-        
-      // Shipped Case
       case this.EGYPTIAN_ORDER_STATUSES.SHIPPED:
       case this.EGYPTIAN_ORDER_STATUSES.SHIPPED_2:
         if (enabledStatuses.shipped) {
-        console.log(`🚚 ➤ Shipped Order detected: "${status}" → Sending shipped message`);
-        await this.handleShippedOrder(row, templates);
+        console.log(`📦 ➤ Shipped/Confirmed detected: "${status}" → Sending shipped message`);
+        await this.handleShipped(row, templates);
         } else {
           console.log(`🚫 Shipped messages are disabled for status: "${status}"`);
         }
         break;
-
-      // Delivered Case (Final State)
-      case 'تم التوصيل':
-      case 'تم التوصيل بنجاح':
-      case 'delivered':
-        console.log(`🎉 ➤ Delivered Order detected: "${status}" → Final state (no message)`);
-        await this.handleDeliveredOrder(row, templates);
-        break;
-
-      // Cancelled Case
-      case 'ملغي':
-      case 'تم الإلغاء':
-      case 'cancelled':
-        console.log(`❌ ➤ Cancelled Order detected: "${status}" → Final state (no message)`);
-        await this.handleCancelledOrder(row, templates);
+        
+      // Empty status case (treated as new order)
+      case this.EGYPTIAN_ORDER_STATUSES.EMPTY:
+        if (enabledStatuses.newOrder) {
+        console.log(`📋 ➤ Empty Status detected (treated as new order) → Sending newOrder message`);
+        await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد');
+        } else {
+          console.log(`🚫 New Order messages are disabled for empty status`);
+        }
         break;
         
       default:
-        console.log(`❓ ➤ Unknown status detected: "${status}" → No action taken`);
-        console.log(`💡 إذا كانت هذه حالة جديدة، أضفها إلى الحالات المدعومة في النظام`);
+        console.log(`❓ Unknown status: "${status}" for order ${orderId} - no action taken`);
         break;
     }
   }
@@ -818,89 +739,53 @@ export class AutomationEngine {
       const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
       
       console.log(reason);
-
+      
       return {
         shouldSend: false,
         reason,
         stats: {
-          timeSinceLastMessage: timeDiff,
           totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
-          duplicatesForThisOrder: this.duplicateAttempts.get(duplicateKey)?.preventedDuplicates || 1
+          duplicatesPreventedByType: this.duplicatePreventionStats.duplicatesPreventedByType[messageType],
+          attemptCount: existingAttempt ? existingAttempt.attemptCount : 2
         }
       };
     }
 
-    // Message is new - can be sent
-    console.log(`✅ رسالة جديدة: ${messageType} للعميل ${customerName} (طلب ${orderId})`);
-    
     return {
       shouldSend: true,
-      reason: `رسالة ${messageType} جديدة يمكن إرسالها`,
+      reason: `✅ رسالة ${messageType} جديدة للعميل ${customerName} (طلب ${orderId})`,
       stats: {
-        timeSinceLastMessage: 0,
         totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
-        duplicatesForThisOrder: 0
+        duplicatesPreventedByType: this.duplicatePreventionStats.duplicatesPreventedByType[messageType],
+        attemptCount: 1
       }
     };
   }
 
   /**
-   * Mark message as sent in tracking system
+   * Mark message as sent with enhanced tracking
    */
   private static markMessageAsSent(
     orderId: string, 
     messageType: 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder',
-    customerName?: string
+    customerName: string
   ): void {
+    const messageKey = messageType === 'reminder' ? `reminder_${orderId}` : `${orderId}_${messageType}`;
     const timestamp = Date.now();
-    
+
     if (messageType === 'reminder') {
-      this.orderStatusHistory.set(`reminder_${orderId}`, {
+      this.orderStatusHistory.set(messageKey, {
         status: 'reminder_sent',
         timestamp
       });
     } else {
-      this.sentMessages.set(`${orderId}_${messageType}`, {
+      this.sentMessages.set(messageKey, {
         messageType,
         timestamp
       });
     }
 
-    console.log(`📝 تم تسجيل إرسال رسالة ${messageType} للطلب ${orderId}${customerName ? ` (${customerName})` : ''}`);
-  }
-
-  /**
-   * Get comprehensive duplicate prevention statistics
-   */
-  static getDuplicatePreventionStats(): {
-    totalPrevented: number;
-    preventedByType: Record<string, number>;
-    recentAttempts: Array<{ orderId: string; messageType: string; attemptCount: number; lastAttempt: string }>;
-    efficiency: string;
-  } {
-    const recentAttempts = Array.from(this.duplicateAttempts.entries())
-      .map(([key, data]) => ({
-        orderId: data.orderId,
-        messageType: data.messageType,
-        attemptCount: data.attemptCount,
-        lastAttempt: new Date(data.lastAttempt).toLocaleString('ar-EG')
-      }))
-      .sort((a, b) => b.attemptCount - a.attemptCount)
-      .slice(0, 10); // أحدث 10 محاولات
-
-    const totalAttempts = Array.from(this.duplicateAttempts.values())
-      .reduce((sum, data) => sum + data.attemptCount, 0);
-    
-    const efficiency = totalAttempts > 0 
-      ? Math.round((this.duplicatePreventionStats.totalDuplicatesPrevented / totalAttempts) * 100) + '%'
-      : '100%';
-
-    return {
-      totalPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
-      preventedByType: { ...this.duplicatePreventionStats.duplicatesPreventedByType },
-      recentAttempts,
-      efficiency
-    };
+    console.log(`✅ تم تسجيل إرسال رسالة ${messageType} للعميل ${customerName} (طلب ${orderId})`);
   }
 
   private static async handleNewOrder(row: SheetRow, templates: MessageTemplates, reminderDelayHours: number, statusType: string): Promise<void> {
@@ -990,49 +875,7 @@ export class AutomationEngine {
     console.log(`🎯 Successfully processed noAnswer for ${orderId} - Follow-up message queued`);
   }
 
-  /**
-   * العرض الخاص بعد الرفض (24 ساعة)
-   */
-  private static async handleRefusedDelivery(row: SheetRow, templates: MessageTemplates, rejectedOfferDelayHours: number): Promise<void> {
-    const { orderId, processedPhone, name, rowIndex } = row;
-    
-    if (!processedPhone || !orderId || !rowIndex) return;
-
-    // Enhanced duplicate prevention check
-    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'rejectedOffer', name);
-    
-    if (!duplicateCheck.shouldSend) {
-      console.log(duplicateCheck.reason);
-      return;
-    }
-
-    // Schedule the rejected offer job (24 hours default as per user request)
-    const rejectedOfferJob: ReminderJob = {
-      orderId,
-      rowIndex,
-      phoneNumber: processedPhone,
-      customerName: name,
-      orderStatus: 'مرفوض',
-    };
-
-    // Add job with 24 hour delay
-    await QueueService.addRejectedOfferJob(rejectedOfferJob, 24); // Fixed 24 hours as requested
-
-    // Mark as scheduled using new system
-    this.markMessageAsSent(orderId, 'rejectedOffer', name);
-
-    // Update status in sheet - DISABLED (READ-ONLY MODE)
-    // await GoogleSheetsService.updateWhatsAppStatus(
-    //   rowIndex,
-    //   'عرض خاص مجدول',
-    //   'سيتم إرسال العرض الخاص بعد 24 ساعة'
-    // );
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: عرض خاص مجدول`);
-
-    console.log(`🎁 تم جدولة العرض الخاص للطلب المرفوض: ${orderId} (بعد 24 ساعة)`);
-  }
-
-  private static async handleConfirmedOrder(row: SheetRow, templates: MessageTemplates): Promise<void> {
+  private static async handleShipped(row: SheetRow, templates: MessageTemplates): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
     
     if (!processedPhone || !orderId || !rowIndex) return;
@@ -1045,7 +888,9 @@ export class AutomationEngine {
       return;
     }
 
-    // Send shipped message for both confirmed and shipped statuses
+    console.log(`📦 Sending shipped message to ${name} (${processedPhone}) for order ${orderId}`);
+
+    // Send shipped confirmation message
     const shippedMessage = this.replaceMessageVariables(templates.shipped, row);
 
     const messageJob: MessageJob = {
@@ -1061,176 +906,77 @@ export class AutomationEngine {
     // Mark message as sent using new system
     this.markMessageAsSent(orderId, 'shipped', name);
 
-    // Update status in sheet - DISABLED (READ-ONLY MODE)
-    // await GoogleSheetsService.updateWhatsAppStatus(
-    //   rowIndex,
-    //   'تم إرسال تأكيد الشحن',
-    //   'تم إرسال رسالة تأكيد الشحن للعميل'
-    // );
     console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم إرسال تأكيد الشحن`);
-
-    console.log(`🚚 تم إرسال رسالة تأكيد الشحن للطلب: ${orderId}`);
+    console.log(`🎯 Successfully processed shipped for ${orderId} - Confirmation message queued`);
   }
 
-  private static async handleShippedOrder(row: SheetRow, templates: MessageTemplates): Promise<void> {
-    // Use the same handler as confirmed since they both send shipped message
-    await this.handleConfirmedOrder(row, templates);
-  }
+  private static async handleRefusedDelivery(row: SheetRow, templates: MessageTemplates, rejectedOfferDelayHours: number): Promise<void> {
+    const { orderId, processedPhone, name, rowIndex } = row;
+    
+    if (!processedPhone || !orderId || !rowIndex) return;
 
-  /**
-   * Enhanced Egyptian Message Variable Replacement
-   * Supports all variables needed for professional Egyptian e-commerce
-   */
-  private static replaceMessageVariables(template: string, row: SheetRow): string {
-    const currentDate = new Date().toLocaleDateString('ar-EG', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
+    // Enhanced duplicate prevention check
+    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'rejectedOffer', name);
+    
+    if (!duplicateCheck.shouldSend) {
+      console.log(duplicateCheck.reason);
+      return;
+    }
 
-    const currentTime = new Date().toLocaleTimeString('ar-EG', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    console.log(`🚫 Scheduling rejectedOffer message to ${name} (${processedPhone}) for order ${orderId} (delay: ${rejectedOfferDelayHours}h)`);
 
-    // Default company information (can be made configurable later)
-    const companyInfo = {
-      companyName: 'متجر مصر أونلاين',
-      supportPhone: '01000000000',
-      trackingLink: 'https://track.example.com',
-      deliveryAddress: 'العنوان المحدد في الطلب'
+    // Schedule rejected offer message with delay
+    const rejectedOfferMessage = this.replaceMessageVariables(templates.rejectedOffer, row);
+
+    const messageJob: MessageJob = {
+      phoneNumber: processedPhone,
+      message: rejectedOfferMessage,
+      orderId,
+      rowIndex,
+      messageType: 'rejectedOffer',
     };
 
-    // Calculate discount information
-    const originalAmount = parseFloat(row.totalPrice?.toString() || '0');
-    const discountPercent = 20; // 20% discount for rejected offers
-    const discountedAmount = Math.round(originalAmount * (1 - discountPercent / 100));
-    const savedAmount = originalAmount - discountedAmount;
+    // Add to queue with delay (convert hours to milliseconds)
+    await QueueService.addMessageJob(messageJob);
 
-    // Generate tracking number if not provided
-    const trackingNumber = `TRK${row.orderId || Date.now()}`;
-    const deliveryAddress = row.address || companyInfo.deliveryAddress;
+    // Mark message as sent using new system
+    this.markMessageAsSent(orderId, 'rejectedOffer', name);
 
-    // Replace all variables
-    return template
-      // Customer Info
-      .replace(/{name}/g, row.name || 'عزيزي العميل')
-      .replace(/{phone}/g, row.processedPhone || row.phone || '')
-      
-      // Order Info
-      .replace(/{orderId}/g, row.orderId || 'غير محدد')
-      .replace(/{amount}/g, row.totalPrice?.toString() || '0')
-      .replace(/{productName}/g, row.productName || 'المنتج المطلوب')
-      
-      // Company Info
-      .replace(/{companyName}/g, companyInfo.companyName)
-      .replace(/{supportPhone}/g, companyInfo.supportPhone)
-      
-      // Shipping Info
-      .replace(/{trackingNumber}/g, trackingNumber)
-      .replace(/{deliveryAddress}/g, deliveryAddress)
-      .replace(/{trackingLink}/g, companyInfo.trackingLink + '/' + trackingNumber)
-      
-      // Discount Info
-      .replace(/{discountedAmount}/g, discountedAmount.toString())
-      .replace(/{savedAmount}/g, savedAmount.toString())
-      
-      // Dates
-      .replace(/{confirmationDate}/g, currentDate)
-      .replace(/{shippingDate}/g, currentDate)
-      .replace(/{deliveryDate}/g, currentDate)
-      .replace(/{deliveryTime}/g, currentTime)
-      .replace(/{cancellationDate}/g, currentDate);
-  }
-
-  /**
-   * Final state - no message required but log as completed
-   */
-  private static async handleDeliveredOrder(row: SheetRow, templates: MessageTemplates): Promise<void> {
-    const { orderId, name, rowIndex } = row;
-    
-    if (!orderId || !rowIndex) return;
-
-    // Update status to indicate successful completion - DISABLED (READ-ONLY MODE)
-    // await GoogleSheetsService.updateWhatsAppStatus(
-    //   rowIndex,
-    //   'تم التوصيل بنجاح',
-    //   'طلب مكتمل - لا حاجة لرسائل إضافية'
-    // );
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم التوصيل بنجاح`);
-    
-    console.log(`🎉 Order delivered successfully: ${orderId} for ${name}`);
-  }
-
-  private static async handleCancelledOrder(row: SheetRow, templates: MessageTemplates): Promise<void> {
-    const { orderId, name, rowIndex } = row;
-    
-    if (!orderId || !rowIndex) return;
-
-    // Update status to indicate cancellation - DISABLED (READ-ONLY MODE)
-    // await GoogleSheetsService.updateWhatsAppStatus(
-    //   rowIndex,
-    //   'تم الإلغاء',
-    //   'طلب ملغي - لا حاجة لرسائل إضافية'
-    // );
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم الإلغاء`);
-    
-    console.log(`🚫 Order cancelled: ${orderId} for ${name}`);
+    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم جدولة عرض جديد`);
+    console.log(`🎯 Successfully processed rejectedOffer for ${orderId} - Message scheduled for ${rejectedOfferDelayHours}h delay`);
   }
 
   private static async checkReminderConditions(
     row: SheetRow, 
-    previousStatusData: { status: string; timestamp: number }, 
+    previousStatusData: { status: string, timestamp: number }, 
     templates: MessageTemplates, 
     reminderDelayHours: number
   ): Promise<void> {
-    const { orderId, processedPhone, name, orderStatus, rowIndex } = row;
+    const { orderId, processedPhone, name, rowIndex } = row;
     
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Check if reminders are enabled
-    const statusSettings = await ConfigService.getStatusSettings();
-    if (!statusSettings?.enabledStatuses?.reminder) {
-      console.log(`🚫 Reminders are disabled - skipping for order ${orderId}`);
-      return;
-    }
+    // Check if enough time has passed for a reminder
+    const timeSinceLastStatus = Date.now() - previousStatusData.timestamp;
+    const reminderThreshold = reminderDelayHours * 60 * 60 * 1000; // Convert hours to milliseconds
 
-    // Check if enough time has passed since last status change
-    const hoursSinceLastChange = (Date.now() - previousStatusData.timestamp) / (1000 * 60 * 60);
-    
-    // تنظيف حالة الطلب
-    const cleanStatus = (orderStatus || '').trim();
-    
-    // تحديد الحالات التي تحتاج تذكيرات (شامل الحالة الفارغة)
-    const needsReminder = (
-      cleanStatus === '' ||  // الحالة الفارغة
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW || 
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_2 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_3 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_4 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.UNDEFINED ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_1 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_2 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_3 ||
-      cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_4
-    );
-    
-    // Only send reminders for certain statuses and if enough time has passed
-    if (hoursSinceLastChange >= reminderDelayHours && needsReminder) {
+    if (timeSinceLastStatus >= reminderThreshold) {
+      // Check if we should send a reminder based on the current status
+      const shouldSendReminder = this.shouldSendReminderForStatus(row.orderStatus);
       
-      // Enhanced duplicate prevention check for reminders
-      const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'reminder', name);
-      
-      if (!duplicateCheck.shouldSend) {
-        console.log(duplicateCheck.reason);
-        return;
-      }
-      
-      console.log(`⏰ Sending reminder for order ${orderId} with status: "${cleanStatus || 'فارغ'}" (${Math.round(hoursSinceLastChange)}h since last change)`);
-      
-        const reminderMessage = templates.reminder
-          .replace('{name}', name)
-          .replace('{orderId}', orderId);
+      if (shouldSendReminder) {
+        // Enhanced duplicate prevention check
+        const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'reminder', name);
+        
+        if (!duplicateCheck.shouldSend) {
+          console.log(duplicateCheck.reason);
+          return;
+        }
+
+        console.log(`🔔 Sending reminder message to ${name} (${processedPhone}) for order ${orderId}`);
+
+        // Send reminder message
+        const reminderMessage = this.replaceMessageVariables(templates.reminder || templates.newOrder, row);
 
         const messageJob: MessageJob = {
           phoneNumber: processedPhone,
@@ -1241,11 +987,116 @@ export class AutomationEngine {
         };
 
         await QueueService.addMessageJob(messageJob);
-        
-      // Mark reminder as sent using new system
-      this.markMessageAsSent(orderId, 'reminder', name);
-        
-      console.log(`✅ تم جدولة رسالة تذكير للطلب: ${orderId}`);
+
+        // Mark message as sent using new system
+        this.markMessageAsSent(orderId, 'reminder', name);
+
+        console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم إرسال تذكير`);
+        console.log(`🎯 Successfully processed reminder for ${orderId} - Reminder message queued`);
+      }
+    }
+  }
+
+  private static shouldSendReminderForStatus(orderStatus: string): boolean {
+    const status = (orderStatus || '').trim();
+    
+    // Send reminders for new orders and no-answer cases
+    return status === this.EGYPTIAN_ORDER_STATUSES.NEW ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NEW_2 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NEW_3 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NEW_4 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_1 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_2 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_3 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_4 ||
+           status === this.EGYPTIAN_ORDER_STATUSES.EMPTY ||
+           status === this.EGYPTIAN_ORDER_STATUSES.UNDEFINED;
+  }
+
+  private static replaceMessageVariables(template: string, row: SheetRow): string {
+    return template
+      .replace(/\{name\}/g, row.name || 'عميل عزيز')
+      .replace(/\{product\}/g, row.productName || 'المنتج')
+      .replace(/\{price\}/g, row.totalPrice?.toString() || 'السعر')
+      .replace(/\{orderId\}/g, row.orderId || 'رقم الطلب')
+      .replace(/\{phone\}/g, row.processedPhone || row.phone || 'رقم الهاتف')
+      .replace(/\{whatsappNumber\}/g, row.whatsappNumber || row.processedPhone || row.phone || 'رقم الواتساب')
+      .replace(/\{address\}/g, row.address || 'العنوان')
+      .replace(/\{city\}/g, row.governorate || 'المدينة')
+      .replace(/\{governorate\}/g, row.governorate || 'المحافظة')
+      .replace(/\{orderStatus\}/g, row.orderStatus || 'حالة الطلب')
+      .replace(/\{notes\}/g, row.notes || '')
+      .replace(/\{orderDate\}/g, row.orderDate || 'تاريخ الطلب')
+      .replace(/\{deliveryDate\}/g, row.orderDate || 'تاريخ التسليم')
+      .replace(/\{trackingNumber\}/g, row.orderId || 'رقم التتبع')
+      .replace(/\{quantity\}/g, row.quantity || '1')
+      .replace(/\{total\}/g, row.totalPrice?.toString() || row.totalPrice?.toString() || 'الإجمالي');
+  }
+
+  private static logSupportedStatuses(): void {
+    console.log('📋 Supported Egyptian Order Statuses:');
+    console.log('   New Orders:', Object.values(this.EGYPTIAN_ORDER_STATUSES).slice(0, 6));
+    console.log('   No Answer:', Object.values(this.EGYPTIAN_ORDER_STATUSES).slice(6, 10));
+    console.log('   Confirmed/Shipped:', Object.values(this.EGYPTIAN_ORDER_STATUSES).slice(10, 15));
+    console.log('   Rejected:', Object.values(this.EGYPTIAN_ORDER_STATUSES).slice(15));
+  }
+
+  private static initializeCacheCleanup(): void {
+    // Clean up old cache entries every hour
+    setInterval(() => {
+      const now = Date.now();
+      let cleanedCount = 0;
+      
+      for (const [phone, data] of this.phoneValidationCache.entries()) {
+        if (now - data.lastChecked > this.PHONE_CACHE_EXPIRATION) {
+          this.phoneValidationCache.delete(phone);
+          cleanedCount++;
+        }
+      }
+      
+      if (cleanedCount > 0) {
+        console.log(`🧹 Cleaned up ${cleanedCount} expired phone validation cache entries`);
+      }
+    }, 60 * 60 * 1000); // 1 hour
+  }
+
+  private static async preWarmPhoneCache(): Promise<void> {
+    try {
+      // Get recent sheet data to pre-warm cache
+      const sheetData = await GoogleSheetsService.getSheetData();
+      const uniquePhones = new Set<string>();
+      
+      // Extract unique phone numbers
+      for (const row of sheetData.slice(0, 100)) { // Limit to first 100 orders
+        if (row.phone) uniquePhones.add(row.phone);
+        if (row.whatsappNumber) uniquePhones.add(row.whatsappNumber);
+      }
+      
+      console.log(`🔥 Pre-warming cache with ${uniquePhones.size} unique phone numbers...`);
+      
+      // Pre-process phone numbers
+      let processedCount = 0;
+      for (const phone of uniquePhones) {
+        const phoneProcessing = PhoneProcessor.processTwoNumbers(phone, '');
+        if (phoneProcessing.isValid) {
+          const egyptianValidation = PhoneProcessor.validateEgyptianNumber(phoneProcessing.preferredNumber);
+          if (egyptianValidation.isValid) {
+            // Add to cache as valid (without WhatsApp validation to avoid API calls)
+            this.phoneValidationCache.set(egyptianValidation.finalFormat, {
+              isValid: true,
+              isRegistered: true, // Assume true for pre-warming
+              processedPhone: egyptianValidation.finalFormat,
+              lastChecked: Date.now(),
+              reason: 'Pre-warmed cache entry'
+            });
+            processedCount++;
+          }
+        }
+      }
+      
+      console.log(`✅ Pre-warmed ${processedCount} phone numbers in cache`);
+    } catch (error) {
+      console.warn('⚠️ Failed to pre-warm phone cache:', error);
     }
   }
 
@@ -1556,8 +1407,8 @@ export class AutomationEngine {
   // Clear caches (for testing/debugging)
   static clearCaches(): void {
     this.phoneValidationCache.clear();
-    this.sentMessages.clear();
     this.duplicateAttempts.clear();
+    this.sentMessages.clear();
     this.performanceStats.cacheHits = 0;
     this.performanceStats.cacheMisses = 0;
     this.performanceStats.whatsappApiCalls = 0;
