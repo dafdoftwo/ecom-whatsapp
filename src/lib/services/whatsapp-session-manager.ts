@@ -88,21 +88,21 @@ export class WhatsAppSessionManager {
         });
       }
 
-      // 🔧 FIX: زيادة timeout إلى 90 ثانية بدلاً من 30
+      // Set initialization timeout
       this.initializationTimeout = setTimeout(() => {
-        console.log('⏱️ Initialization timeout reached (90 seconds)');
+        console.log('⏱️ Initialization timeout reached');
         this.updateState({
           status: 'error',
-          error: 'انتهت مهلة التهيئة بعد 90 ثانية - قد يكون السرفر بطيء. حاول مرة أخرى أو امسح الجلسة',
+          error: 'انتهت مهلة التهيئة - حاول مرة أخرى',
           sessionHealth: 'critical'
         });
-      }, 90000); // 🔧 FIX: 90 seconds timeout
+      }, 30000); // 30 seconds timeout
 
       // Initialize WhatsApp
       await this.whatsapp.initialize();
       
-      // 🔧 FIX: Wait for QR code generation with longer timeout
-      const qrResult = await this.waitForQRCode(30); // 30 attempts = 30 seconds
+      // Wait for QR code generation
+      const qrResult = await this.waitForQRCode();
       
       if (qrResult.success && qrResult.qrCode) {
         this.updateState({
@@ -111,13 +111,13 @@ export class WhatsAppSessionManager {
           sessionHealth: 'healthy'
         });
         
-        // 🔧 FIX: Set longer QR timeout (3 minutes instead of 2)
-        this.setQRTimeout(180000); // 3 minutes
+        // Set QR timeout
+        this.setQRTimeout();
         
         return {
           success: true,
           needsQR: true,
-          message: 'تم توليد QR Code بنجاح - امسح الكود للاتصال (انتباه: الكود صالح لمدة 3 دقائق)',
+          message: 'تم توليد QR Code بنجاح - امسح الكود للاتصال',
           state: this.state
         };
       }
@@ -141,14 +141,14 @@ export class WhatsAppSessionManager {
       // Failed to generate QR or connect
       this.updateState({
         status: 'error',
-        error: 'فشل في توليد QR Code - قد يكون هناك مشكلة في الشبكة أو السرفر',
+        error: 'فشل في توليد QR Code',
         sessionHealth: 'degraded'
       });
       
       return {
         success: false,
         needsQR: true,
-        message: 'فشل في توليد QR Code - حاول مسح الجلسة أو انتظر قليلاً ثم حاول مرة أخرى',
+        message: 'فشل في توليد QR Code - حاول مسح الجلسة',
         state: this.state
       };
 
@@ -156,28 +156,16 @@ export class WhatsAppSessionManager {
       console.error('❌ Smart initialization error:', error);
       this.clearTimeouts();
       
-      // 🔧 FIX: Enhanced error messages based on error type
-      let errorMessage = error instanceof Error ? error.message : 'خطأ غير معروف';
-      let userFriendlyMessage = 'فشل في التهيئة';
-      
-      if (errorMessage.includes('timeout')) {
-        userFriendlyMessage = 'انتهت مهلة الاتصال - قد يكون السرفر بطيء. انتظر قليلاً ثم حاول مرة أخرى';
-      } else if (errorMessage.includes('Protocol error') || errorMessage.includes('Target closed')) {
-        userFriendlyMessage = 'خطأ في المتصفح - يُنصح بمسح الجلسة والمحاولة مرة أخرى';
-      } else if (errorMessage.includes('net::ERR_') || errorMessage.includes('Network')) {
-        userFriendlyMessage = 'خطأ في الشبكة - تحقق من اتصال الإنترنت وحاول مرة أخرى';
-      }
-      
       this.updateState({
         status: 'error',
-        error: userFriendlyMessage,
+        error: error instanceof Error ? error.message : 'خطأ غير معروف',
         sessionHealth: 'critical'
       });
       
       return {
         success: false,
         needsQR: true,
-        message: userFriendlyMessage,
+        message: `فشل في التهيئة: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`,
         state: this.state
       };
     }
@@ -431,7 +419,7 @@ export class WhatsAppSessionManager {
     });
   }
 
-  private setQRTimeout(duration: number = 120000): void {
+  private setQRTimeout(): void {
     // Clear existing timeout
     if (this.qrTimeout) {
       clearTimeout(this.qrTimeout);
@@ -446,7 +434,7 @@ export class WhatsAppSessionManager {
         qrCode: undefined,
         sessionHealth: 'degraded'
       });
-    }, duration); // Use the provided duration
+    }, 120000); // 2 minutes
   }
 
   private clearTimeouts(): void {

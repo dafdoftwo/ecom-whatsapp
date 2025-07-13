@@ -42,14 +42,10 @@ const SESSION_CONFIG = {
   CLIENT_ID: 'whatsapp-automation-pro',
   SESSION_PATH: './whatsapp-session-pro',
   MAX_SESSION_SIZE_MB: 200, // Maximum session size before cleanup
-  SESSION_TIMEOUT_MS: 60000, // 🔧 FIX: زيادة إلى 60 ثانية بدلاً من 20
-  PUPPETEER_TIMEOUT_MS: 45000, // 🔧 FIX: زيادة إلى 45 ثانية بدلاً من 15
-  QR_GENERATION_TIMEOUT_MS: 30000, // 🔧 FIX: timeout خاص لتوليد QR
-  MAX_INIT_RETRIES: 3, // 🔧 FIX: زيادة المحاولات إلى 3
+  SESSION_TIMEOUT_MS: 20000, // تقليل إلى 20 ثانية بدلاً من 45
+  PUPPETEER_TIMEOUT_MS: 15000, // تقليل إلى 15 ثانية بدلاً من 30
+  MAX_INIT_RETRIES: 2,
   HEALTH_CHECK_INTERVAL_MS: 30000, // 30 seconds
-  // 🔧 NEW: Process isolation settings
-  PROCESS_CLEANUP_TIMEOUT: 10000, // 10 seconds for process cleanup
-  FORCE_KILL_TIMEOUT: 5000, // 5 seconds before force kill
 };
 
 export class WhatsAppService {
@@ -64,136 +60,15 @@ export class WhatsAppService {
   private isInitializing: boolean = false;
   private initializationPromise: Promise<void> | null = null;
   private initRetries: number = 0;
-  // 🔧 NEW: Process management
-  private browserProcessPid: number | null = null;
-  private sessionLockPath: string | null = null;
 
   private constructor() {
     // Private constructor for singleton pattern
     // Start connection health monitoring
     this.startHealthMonitoring();
-    
-    // 🔧 NEW: Setup process cleanup handlers
-    this.setupProcessCleanupHandlers();
   }
 
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck: Date = new Date();
-
-  // 🔧 NEW: Setup cleanup handlers for graceful shutdown
-  private setupProcessCleanupHandlers(): void {
-    const cleanup = async () => {
-      console.log('🧹 Process cleanup triggered - cleaning browser processes...');
-      await this.forceCleanupBrowserProcesses();
-    };
-
-    // Handle various exit scenarios
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
-    process.on('SIGQUIT', cleanup);
-    process.on('exit', cleanup);
-    process.on('uncaughtException', cleanup);
-    process.on('unhandledRejection', cleanup);
-  }
-
-  // 🔧 NEW: Force cleanup of browser processes and locks
-  private async forceCleanupBrowserProcesses(): Promise<void> {
-    try {
-      console.log('🔄 Force cleaning browser processes and locks...');
-      
-      // Kill browser process if we have PID
-      if (this.browserProcessPid) {
-        try {
-          const { exec } = await import('child_process');
-          const { promisify } = await import('util');
-          const execAsync = promisify(exec);
-          
-          // Kill the specific browser process
-          await execAsync(`kill -9 ${this.browserProcessPid} 2>/dev/null || true`);
-          console.log(`🔫 Killed browser process ${this.browserProcessPid}`);
-          this.browserProcessPid = null;
-        } catch (error) {
-          console.warn('⚠️ Could not kill browser process:', error);
-        }
-      }
-      
-      // Clean up singleton lock files
-      if (this.sessionLockPath && fs.existsSync(this.sessionLockPath)) {
-        try {
-          await fs.promises.unlink(this.sessionLockPath);
-          console.log('🗑️ Removed singleton lock file');
-        } catch (error) {
-          console.warn('⚠️ Could not remove lock file:', error);
-        }
-      }
-      
-      // Force kill any remaining Chrome processes
-      try {
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
-        const execAsync = promisify(exec);
-        
-        // Kill any remaining Chrome processes related to our session
-        await execAsync(`pkill -f "chromium.*${SESSION_CONFIG.CLIENT_ID}" 2>/dev/null || true`);
-        await execAsync(`pkill -f "chrome.*${SESSION_CONFIG.CLIENT_ID}" 2>/dev/null || true`);
-        console.log('🧹 Cleaned up any remaining Chrome processes');
-      } catch (error) {
-        console.warn('⚠️ Could not clean Chrome processes:', error);
-      }
-      
-    } catch (error) {
-      console.error('❌ Error in force cleanup:', error);
-    }
-  }
-
-  // 🔧 NEW: Clean singleton locks before initialization
-  private async cleanSingletonLocks(): Promise<void> {
-    try {
-      const sessionPath = path.resolve(SESSION_CONFIG.SESSION_PATH);
-      const lockPath = path.join(sessionPath, `session-${SESSION_CONFIG.CLIENT_ID}`, 'SingletonLock');
-      this.sessionLockPath = lockPath;
-      
-      if (fs.existsSync(lockPath)) {
-        console.log('🔧 Found existing singleton lock, removing...');
-        await fs.promises.unlink(lockPath);
-        console.log('✅ Singleton lock removed');
-      }
-      
-      // Also check for browser lock files recursively
-      const sessionDirPath = path.join(sessionPath, `session-${SESSION_CONFIG.CLIENT_ID}`);
-      if (fs.existsSync(sessionDirPath)) {
-        await this.removeLockFilesRecursively(sessionDirPath);
-      }
-      
-    } catch (error) {
-      console.warn('⚠️ Error cleaning singleton locks:', error);
-    }
-  }
-
-  // 🔧 NEW: Recursively remove lock files
-  private async removeLockFilesRecursively(dirPath: string): Promise<void> {
-    try {
-      const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
-      
-      for (const item of items) {
-        const fullPath = path.join(dirPath, item.name);
-        
-        if (item.isDirectory()) {
-          await this.removeLockFilesRecursively(fullPath);
-        } else if (item.name.includes('Lock') || item.name.includes('lock')) {
-          try {
-            await fs.promises.unlink(fullPath);
-            console.log(`🗑️ Removed lock file: ${item.name}`);
-          } catch (error) {
-            console.warn(`⚠️ Could not remove lock file ${item.name}:`, error);
-          }
-        }
-      }
-    } catch (error) {
-      // Directory might not exist or be readable, that's okay
-      console.warn(`⚠️ Could not read directory ${dirPath}:`, error);
-    }
-  }
 
   private startHealthMonitoring(): void {
     // Check connection health every 30 seconds
@@ -392,12 +267,6 @@ export class WhatsAppService {
       // Step 1: Clean up old sessions first
       await this.cleanupOldSessions();
 
-      // Step 1.5: 🔧 NEW: Clean singleton locks to prevent lock errors
-      console.log('🔧 Cleaning singleton locks and browser processes...');
-      await this.forceCleanupBrowserProcesses();
-      await this.cleanSingletonLocks();
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Give time for cleanup
-
       // Step 2: Validate current session
       const sessionValidation = await this.validateSession();
       if (!sessionValidation.isValid && sessionValidation.shouldCleanup) {
@@ -450,17 +319,7 @@ export class WhatsAppService {
             '--disable-features=TranslateUI,VizDisplayCompositor',
             '--memory-pressure-off',
           '--max_old_space_size=4096',
-          '--disable-ipc-flooding-protection',
-          // 🔧 NEW: Process isolation and singleton lock fixes
-          '--disable-browser-side-navigation',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-component-extensions-with-background-pages',
-          '--disable-sync',
-          '--disable-background-networking',
-          '--force-process-singleton-off', // 🔧 CRITICAL: Disable singleton lock
-          '--user-data-dir-name=' + SESSION_CONFIG.CLIENT_ID, // 🔧 CRITICAL: Unique data dir
-          '--disable-file-system', // 🔧 Prevent file lock conflicts
-          '--no-first-run-extensions'
+          '--disable-ipc-flooding-protection'
         ]
       };
 
@@ -476,13 +335,7 @@ export class WhatsAppService {
             '--disable-client-side-phishing-detection',
           '--no-crash-upload',
           '--disable-hang-monitor',
-          '--disable-prompt-on-repost',
-          // 🔧 NEW: Railway-specific process isolation
-          '--no-process-per-site',
-          '--disable-site-isolation-trials',
-          '--disable-features=VizDisplayCompositor,VizServiceDisplay',
-          '--remote-debugging-port=0', // 🔧 Disable remote debugging to prevent conflicts
-          '--disable-logging'
+          '--disable-prompt-on-repost'
         );
       }
       
@@ -495,75 +348,26 @@ export class WhatsAppService {
         }),
         puppeteer: puppeteerConfig,
         takeoverOnConflict: true,
-        takeoverTimeoutMs: 15000 // 🔧 FIX: زيادة timeout لـ takeover
+        takeoverTimeoutMs: 10000
       });
 
       // Step 7: Setup event handlers
       console.log('🎯 Setting up event handlers...');
       this.setupEventHandlers();
       
-      // Step 7.5: 🔧 NEW: Track browser process for cleanup
-      this.trackBrowserProcess();
-      
-      // Step 8: Initialize with enhanced timeout and retry logic
+      // Step 8: Initialize with timeout
       console.log('🚀 Starting WhatsApp client initialization...');
       
-      // 🔧 FIX: تحسين آلية الـ timeout مع إمكانية إعادة المحاولة
-      const initWithRetry = async (attempt: number = 1): Promise<void> => {
-        try {
-          const initPromise = this.client!.initialize();
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
-              reject(new Error(`WhatsApp initialization timeout after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds (attempt ${attempt})`));
-            }, SESSION_CONFIG.SESSION_TIMEOUT_MS);
-          });
-          
-          await Promise.race([initPromise, timeoutPromise]);
-          console.log('✅ WhatsApp client initialized successfully');
-          
-          // 🔧 NEW: Update browser process tracking after successful init
-          this.trackBrowserProcess();
-          
-        } catch (error) {
-          console.error(`❌ Initialization attempt ${attempt} failed:`, error);
-          
-          if (attempt < SESSION_CONFIG.MAX_INIT_RETRIES) {
-            console.log(`🔄 Retrying initialization (${attempt + 1}/${SESSION_CONFIG.MAX_INIT_RETRIES})...`);
-            
-            // Clean up failed client
-            if (this.client) {
-              try {
-                await this.cleanup();
-              } catch (cleanupError) {
-                console.warn('Cleanup error during retry:', cleanupError);
-              }
-            }
-            
-            // Wait before retry (exponential backoff)
-            const retryDelay = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
-            console.log(`⏰ Waiting ${retryDelay / 1000} seconds before retry...`);
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-            
-            // Recreate client for retry
-            this.client = new Client({
-              authStrategy: new LocalAuth({
-                clientId: SESSION_CONFIG.CLIENT_ID,
-                dataPath: SESSION_CONFIG.SESSION_PATH
-              }),
-              puppeteer: puppeteerConfig,
-              takeoverOnConflict: true,
-              takeoverTimeoutMs: 15000
-            });
-            
-            this.setupEventHandlers();
-            return initWithRetry(attempt + 1);
-          }
-          
-          throw error;
-        }
-      };
+      const initPromise = this.client.initialize();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`WhatsApp initialization timeout after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds`));
+        }, SESSION_CONFIG.SESSION_TIMEOUT_MS);
+      });
       
-      await initWithRetry();
+      await Promise.race([initPromise, timeoutPromise]);
+      
+      console.log('✅ WhatsApp client initialized successfully');
       this.initRetries = 0; // Reset retry count on success
       
     } catch (error) {
@@ -578,70 +382,53 @@ export class WhatsAppService {
         }
       }
       
-      // 🔧 FIX: تحسين رسائل الخطأ ليفهم المستخدم ما يحدث
-      if (error instanceof Error) {
-        if (error.message.includes('timeout')) {
-          throw new Error(`WhatsApp initialization timed out after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds. This can happen due to slow network or server overload. Please wait a moment and try again. If the problem persists, try clearing the session.`);
-        } else if (error.message.includes('Protocol error') || error.message.includes('Target closed')) {
-          throw new Error('WhatsApp browser connection failed. This can happen on cloud servers. Please try clearing the session and reconnecting.');
-        } else if (error.message.includes('net::ERR_')) {
-          throw new Error('Network error occurred during WhatsApp connection. Please check your internet connection and try again.');
-        }
+      // Handle retries
+      if (this.initRetries < SESSION_CONFIG.MAX_INIT_RETRIES) {
+        this.initRetries++;
+        console.log(`🔄 Retry ${this.initRetries}/${SESSION_CONFIG.MAX_INIT_RETRIES}: Clearing session and retrying...`);
+        await this.clearSession();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        return this.doInitialize();
       }
       
-      throw new Error(`Failed to initialize WhatsApp client: ${error instanceof Error ? error.message : 'Unknown error'}. Please try clearing the session if this persists.`);
+      // Check if it's a timeout error and suggest clearing session
+      if (error instanceof Error && error.message.includes('timeout')) {
+        throw new Error(`WhatsApp initialization timed out after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds. Session may be corrupted. Please clear the session and try again.`);
+      }
+      
+      throw new Error(`Failed to initialize WhatsApp client: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
   private setupEventHandlers(): void {
     if (!this.client) return;
 
-    // 🔧 FIX: QR Code generation with enhanced timeout handling
+    // QR Code generation
     this.client.on('qr', async (qr) => {
       try {
-        console.log('📱 QR Code received from WhatsApp - generating image...');
-        
-        // Start QR generation timeout
-        const qrTimeoutId = setTimeout(() => {
-          console.warn('⏰ QR Code generation taking too long, using fallback...');
-          // Use raw QR as fallback
-          this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
-        }, 10000); // 10 seconds timeout for QR generation
-        
-        try {
-          // Generate QR code as data URL for proper display in browser
-          this.qrCode = await QRCode.toDataURL(qr, {
-            errorCorrectionLevel: 'M',
-            type: 'image/png',
-            margin: 2,
-            color: {
-              dark: '#000000',
-              light: '#FFFFFF'
-            },
-            width: 256
-          });
-          
-          clearTimeout(qrTimeoutId);
-          console.log('✅ QR Code generated successfully - length:', this.qrCode.length);
-          console.log('👆 Please scan the QR code with your WhatsApp mobile app');
-          console.log('⏰ QR Code will expire in 20 seconds - scan quickly!');
-          
-        } catch (qrError) {
-          clearTimeout(qrTimeoutId);
-          console.error('❌ Error generating QR code image:', qrError);
-          // Fallback: store raw QR string if image generation fails
-          this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
-          console.log('📝 Using raw QR as fallback');
-        }
-        
+        console.log('📱 QR Code received from WhatsApp - waiting for scan...');
+        // Generate QR code as data URL for proper display in browser
+        this.qrCode = await QRCode.toDataURL(qr, {
+          errorCorrectionLevel: 'M',
+          type: 'image/png',
+          margin: 2,
+          color: {
+            dark: '#000000',
+            light: '#FFFFFF'
+          },
+          width: 256
+        });
+        console.log('✅ QR Code generated successfully - length:', this.qrCode.length);
+        console.log('👆 Please scan the QR code with your WhatsApp mobile app');
       } catch (error) {
-        console.error('❌ Critical error in QR handler:', error);
-        // Even if everything fails, try to store something
-        this.qrCode = qr;
+        console.error('❌ Error generating QR code:', error);
+        // Fallback: store raw QR string if image generation fails
+        this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
+        console.log('📝 Using raw QR as fallback');
       }
     });
 
-    // 🔧 FIX: Enhanced authentication events with better logging
+    // Authentication events
     this.client.on('authenticated', () => {
       console.log('🔐 WhatsApp authenticated successfully - user scanned QR code!');
       this.isConnected = true;
@@ -653,18 +440,9 @@ export class WhatsAppService {
       console.log('❌ WhatsApp authentication failed:', message);
       this.isConnected = false;
       this.qrCode = null;
-      
-      // 🔧 FIX: Provide helpful error messages
-      if (typeof message === 'string') {
-        if (message.includes('timeout') || message.includes('Timeout')) {
-          console.log('⏰ Authentication timed out - QR Code may have expired. Please regenerate.');
-        } else if (message.includes('session') || message.includes('Session')) {
-          console.log('🗑️ Session authentication failed - consider clearing the session.');
-        }
-      }
     });
 
-    // 🔧 FIX: Enhanced ready event with better status tracking
+    // Ready event - This is when WhatsApp is fully connected and ready
     this.client.on('ready', () => {
       console.log('🎉 WhatsApp client is ready and fully connected!');
       this.isConnected = true;
@@ -677,11 +455,10 @@ export class WhatsAppService {
       
       if (this.clientInfo) {
         console.log(`📞 Connected as: ${this.clientInfo.pushname} (${this.clientInfo.wid.user})`);
-        console.log('🎯 WhatsApp is now ready to send and receive messages!');
       }
     });
 
-    // 🔧 FIX: Enhanced disconnection events with smart reconnection
+    // Disconnection events - Enhanced handling
     this.client.on('disconnected', (reason) => {
       console.log('🔌 WhatsApp disconnected:', reason);
       this.isConnected = false;
@@ -702,19 +479,9 @@ export class WhatsAppService {
       }
     });
 
-    // 🔧 FIX: Enhanced loading screen events
+    // Loading screen events
     this.client.on('loading_screen', (percent, message) => {
       console.log(`⏳ WhatsApp loading: ${percent}% - ${message}`);
-      
-      // Provide user-friendly status updates
-      const percentNum = typeof percent === 'string' ? parseInt(percent) : percent;
-      if (percentNum >= 90) {
-        console.log('🔄 Almost ready... finalizing connection...');
-      } else if (percentNum >= 50) {
-        console.log('📱 Loading WhatsApp interface...');
-      } else if (percentNum >= 20) {
-        console.log('🌐 Establishing connection...');
-      }
     });
 
     // Remote session saved event
@@ -722,38 +489,13 @@ export class WhatsAppService {
       console.log('💾 Remote session saved successfully');
     });
 
-    // 🔧 FIX: Additional debugging events with helpful information
+    // Additional debugging events
     this.client.on('change_state', (state) => {
       console.log(`🔄 WhatsApp state changed to: ${state}`);
-      
-      // Provide context for different states
-      const stateStr = String(state);
-      switch (stateStr) {
-        case 'INITIALIZING':
-          console.log('🚀 WhatsApp is starting up...');
-          break;
-        case 'AUTHENTICATING':
-          console.log('🔐 WhatsApp is authenticating...');
-          break;
-        case 'READY':
-          console.log('✅ WhatsApp is ready!');
-          break;
-        case 'DISCONNECTED':
-          console.log('🔌 WhatsApp is disconnected');
-          break;
-      }
     });
-    
-    // 🔧 FIX: Add error event handler
-    this.client.on('error', (error) => {
-      console.error('❌ WhatsApp client error:', error);
-      
-      // Handle specific error types
-      if (error.message.includes('Protocol error')) {
-        console.log('🔧 Browser protocol error detected - may need session clearing');
-      } else if (error.message.includes('timeout')) {
-        console.log('⏰ Operation timeout - this is usually temporary');
-      }
+
+    this.client.on('change_battery', (batteryInfo) => {
+      console.log(`🔋 Phone battery: ${batteryInfo.battery}% (${batteryInfo.plugged ? 'charging' : 'not charging'})`);
     });
   }
 
@@ -1138,9 +880,6 @@ export class WhatsAppService {
     try {
       console.log('🧹 Clearing WhatsApp session...');
       
-      // 🔧 NEW: Force cleanup browser processes and locks first
-      await this.forceCleanupBrowserProcesses();
-      
       // First logout if connected
       if (this.client && this.isConnected) {
         await this.logout();
@@ -1148,9 +887,6 @@ export class WhatsAppService {
       
       // Cleanup client
       await this.cleanup();
-      
-      // 🔧 NEW: Clean singleton locks after client cleanup
-      await this.cleanSingletonLocks();
       
       // Clear current session files
       const sessionPath = path.resolve(SESSION_CONFIG.SESSION_PATH);
@@ -1161,9 +897,6 @@ export class WhatsAppService {
 
       // Also clear any old session directories
       await this.cleanupOldSessions();
-      
-      // 🔧 NEW: Final cleanup to ensure all locks are removed
-      await this.forceCleanupBrowserProcesses();
       
       this.resetState();
       console.log('✅ All session data cleared successfully');
@@ -1357,27 +1090,6 @@ export class WhatsAppService {
         needsQR: await this.checkSessionExists() === false,
         message: `فشل في الاتصال: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`
       };
-    }
-  }
-
-  /**
-   * 🔧 NEW: Track the browser process ID after successful initialization
-   */
-  private trackBrowserProcess(): void {
-    try {
-      if (this.client && this.client.pupBrowser) {
-        const process = this.client.pupBrowser.process();
-        if (process && process.pid) {
-          this.browserProcessPid = process.pid;
-          console.log(`📦 Browser process ID tracked: ${this.browserProcessPid}`);
-        } else {
-          console.warn('⚠️ Browser process not available for tracking');
-        }
-      } else {
-        console.warn('⚠️ Could not track browser process ID: client or pupBrowser not available');
-      }
-    } catch (error) {
-      console.warn('⚠️ Error tracking browser process:', error);
     }
   }
 } 
