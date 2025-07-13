@@ -35,6 +35,13 @@ export class GoogleSheetsService {
    */
   static async getSheetData(): Promise<SheetRow[]> {
     try {
+      // Check if Google configuration exists first
+      const config = await ConfigService.getGoogleConfig();
+      if (!config.spreadsheetUrl || !config.credentials || Object.keys(config.credentials).length === 0) {
+        console.warn('⚠️ Google Sheets configuration not found or incomplete');
+        return []; // Return empty array instead of throwing error
+      }
+
       const { auth, spreadsheetUrl } = await this.getAuthenticatedClient();
       const sheets = google.sheets({ version: 'v4', auth });
       const spreadsheetId = this.extractSpreadsheetId(spreadsheetUrl);
@@ -47,6 +54,7 @@ export class GoogleSheetsService {
 
       const rows = response.data.values;
       if (!rows || rows.length === 0) {
+        console.log('📊 No data found in Google Sheets');
         return [];
       }
 
@@ -58,8 +66,16 @@ export class GoogleSheetsService {
         dataRows.map((row, index) => this.processSheetRowFinal(row, index + 2)) // +2 لأننا نتخطى العناوين والفهرسة تبدأ من 1
       );
       return processedRows.filter(row => row !== null) as SheetRow[];
+
     } catch (error) {
       console.error('Error getting sheet data:', error);
+      
+      // Return empty array for configuration errors to prevent system crashes
+      if (error instanceof Error && error.message.includes('Google configuration not found')) {
+        console.warn('⚠️ Google Sheets not configured, returning empty data');
+        return [];
+      }
+      
       throw new Error('Failed to fetch data from Google Sheets');
     }
   }

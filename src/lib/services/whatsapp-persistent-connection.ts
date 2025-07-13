@@ -115,7 +115,11 @@ export class WhatsAppPersistentConnection {
    */
   public async initialize(): Promise<void> {
     if (this.isInitializing) {
-      console.log('🔄 Initialization already in progress...');
+      console.log('🔄 Initialization already in progress, waiting...');
+      // Wait for current initialization to complete
+      while (this.isInitializing) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
       return;
     }
     
@@ -324,17 +328,92 @@ export class WhatsAppPersistentConnection {
       throw new Error('Client not created');
     }
     
-    console.log('🚀 Initializing client with timeout protection...');
+    console.log('🚀 Initializing client with enhanced timeout protection...');
     
-    const initPromise = this.client.initialize();
+    // Create a more robust initialization promise
+    const initPromise = new Promise<void>((resolve, reject) => {
+      let resolved = false;
+      
+      // Set up event listeners for early resolution
+      const onReady = () => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          console.log('✅ Client ready - initialization successful');
+          resolve();
+        }
+      };
+      
+      const onQR = () => {
+        if (!resolved) {
+          console.log('📱 QR Code generated - initialization progressing...');
+          // Don't resolve yet, but we know it's working
+        }
+      };
+      
+      const onAuthFailure = (msg: string) => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          console.log('❌ Authentication failed during initialization:', msg);
+          reject(new Error(`Authentication failed: ${msg}`));
+        }
+      };
+      
+      const onDisconnected = (reason: string) => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          console.log('❌ Disconnected during initialization:', reason);
+          reject(new Error(`Disconnected during initialization: ${reason}`));
+        }
+      };
+      
+      const cleanup = () => {
+        if (this.client) {
+          this.client.removeListener('ready', onReady);
+          this.client.removeListener('qr', onQR);
+          this.client.removeListener('auth_failure', onAuthFailure);
+          this.client.removeListener('disconnected', onDisconnected);
+        }
+      };
+      
+      // Attach listeners
+      if (this.client) {
+        this.client.once('ready', onReady);
+        this.client.on('qr', onQR);
+        this.client.once('auth_failure', onAuthFailure);
+        this.client.once('disconnected', onDisconnected);
+        
+        // Start initialization
+        this.client.initialize().catch((error) => {
+          if (!resolved) {
+            resolved = true;
+            cleanup();
+            reject(error);
+          }
+        });
+      } else {
+        reject(new Error('Client is null'));
+      }
+    });
+    
+    // Enhanced timeout with better error message
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`Initialization timeout after ${PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME / 1000} seconds`));
+        reject(new Error(`Initialization timeout after ${PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME / 1000} seconds. This might be due to network issues or WhatsApp service problems. Please try again.`));
       }, PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME);
     });
     
-    await Promise.race([initPromise, timeoutPromise]);
-    console.log('✅ Client initialized successfully');
+    try {
+      await Promise.race([initPromise, timeoutPromise]);
+      console.log('✅ Client initialization completed successfully');
+    } catch (error) {
+      console.error('❌ Client initialization failed:', error);
+      // Cleanup on failure
+      await this.cleanupClient();
+      throw error;
+    }
   }
   
   /**
@@ -876,17 +955,31 @@ export class WhatsAppPersistentConnection {
         // Stop heartbeat first
         this.stopHeartbeatMonitoring();
         
-        // Destroy client
-        await this.client.destroy();
-        console.log('✅ Client destroyed successfully');
+        // Check if client is still valid before destroying
+        if (this.client && typeof this.client.destroy === 'function') {
+          try {
+            await this.client.destroy();
+            console.log('✅ Client destroyed successfully');
+          } catch (destroyError) {
+            console.warn('⚠️ Error during client destroy (non-critical):', destroyError);
+            // Continue with cleanup even if destroy fails
+          }
+        } else {
+          console.log('⚠️ Client already destroyed or invalid');
+        }
         
       } catch (error) {
-        console.warn('⚠️ Error during client cleanup:', error);
+        console.warn('⚠️ Error during client cleanup (non-critical):', error);
+        // Don't throw error, just log it as cleanup should be resilient
       } finally {
         this.client = null;
         this.isConnected = false;
         this.clientInfo = null;
+        this.qrCode = null;
+        console.log('✅ Client state reset completed');
       }
+    } else {
+      console.log('ℹ️ No client to cleanup');
     }
   }
   
