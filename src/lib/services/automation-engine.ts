@@ -48,6 +48,14 @@ export class AutomationEngine {
   // Track orders that were updated from empty status to prevent duplicates
   private static updatedFromEmptyStatus = new Set<string>();
 
+  // Enhanced tracking for empty status orders to prevent duplicate messages
+  private static emptyStatusOrdersTracking = new Map<string, {
+    firstSeen: number;
+    lastProcessed: number;
+    messagesSent: Set<string>;
+    processCount: number;
+  }>();
+
   // Enhanced duplicate prevention tracking
   private static duplicateAttempts = new Map<string, {
     orderId: string;
@@ -376,6 +384,9 @@ export class AutomationEngine {
         this.performanceStats.processingStartTime = Date.now();
         console.log('🔄 Egyptian automation engine processing cycle (OPTIMIZED)...');
         
+        // Clean up old empty status tracking periodically
+        this.cleanupOldEmptyStatusTracking();
+        
         // Pre-processing checks
         console.log('🔍 Pre-processing system checks...');
         
@@ -667,11 +678,51 @@ export class AutomationEngine {
     // تنظيف الحالة من الفراغات
     const status = (orderStatus || '').trim();
     
-    // معالجة خاصة للحالة الفارغة
+    // معالجة خاصة للحالة الفارغة مع منع التكرار المحسّن
     if (status === '') {
+      // Create unique tracking key for empty status orders
+      const emptyStatusKey = `${orderId}_${name}_${processedPhone}`;
+      
+      // Check if we've already processed this empty status order
+      const emptyTracking = this.emptyStatusOrdersTracking.get(emptyStatusKey);
+      
+      if (emptyTracking) {
+        // Check if we've already sent a newOrder message for this empty status
+        if (emptyTracking.messagesSent.has('newOrder')) {
+          const timeSinceFirst = Math.round((Date.now() - emptyTracking.firstSeen) / 1000 / 60);
+          const timeSinceLast = Math.round((Date.now() - emptyTracking.lastProcessed) / 1000 / 60);
+          
+          console.log(`🚫 منع تكرار: طلب ذو حالة فارغة ${orderId} (${name}) - تم إرسال رسالة طلب جديد منذ ${timeSinceLast} دقيقة`);
+          console.log(`   📊 إحصائيات: أول مشاهدة منذ ${timeSinceFirst} دقيقة، عدد المعالجات: ${emptyTracking.processCount + 1}`);
+          
+          // Update tracking
+          emptyTracking.lastProcessed = Date.now();
+          emptyTracking.processCount++;
+          
+          // Don't send duplicate message
+          return;
+        }
+      } else {
+        // First time seeing this empty status order
+        this.emptyStatusOrdersTracking.set(emptyStatusKey, {
+          firstSeen: Date.now(),
+          lastProcessed: Date.now(),
+          messagesSent: new Set<string>(),
+          processCount: 1
+        });
+      }
+      
       console.log(`🔳 ➤ Empty Status detected for order ${orderId} (${name}) → Treating as NEW ORDER`);
+      
       if (enabledStatuses.newOrder) {
+        // Process as new order and mark that we've sent this message
         await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد (حالة فارغة)');
+        
+        // Mark that we've sent newOrder message for this empty status
+        const tracking = this.emptyStatusOrdersTracking.get(emptyStatusKey);
+        if (tracking) {
+          tracking.messagesSent.add('newOrder');
+        }
       } else {
         console.log(`🚫 New Order messages are disabled for empty status`);
       }
@@ -1502,6 +1553,7 @@ export class AutomationEngine {
   static resetEmptyStatusTracking(): void {
     console.log('🧹 Resetting empty status tracking...');
     this.updatedFromEmptyStatus.clear();
+    this.emptyStatusOrdersTracking.clear(); // Clear the new tracking map
     
     // إزالة تاريخ التحديثات القديمة (أكثر من 24 ساعة)
     const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
@@ -1516,11 +1568,42 @@ export class AutomationEngine {
   }
 
   /**
+   * تنظيف تتبع الحالات الفارغة القديمة (أكثر من 24 ساعة)
+   */
+  private static cleanupOldEmptyStatusTracking(): void {
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    let cleanedCount = 0;
+    
+    // Clean up old empty status tracking
+    for (const [key, tracking] of this.emptyStatusOrdersTracking.entries()) {
+      if (tracking.lastProcessed < oneDayAgo) {
+        this.emptyStatusOrdersTracking.delete(key);
+        cleanedCount++;
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      console.log(`🧹 Cleaned up ${cleanedCount} old empty status tracking entries`);
+    }
+  }
+
+  /**
    * الحصول على إحصائيات تحديث الحالات الفارغة
    */
   static getEmptyStatusStats(): {
     trackedUpdatedOrders: number;
     recentUpdates: Array<{ orderId: string; timestamp: number; timeSinceUpdate: number }>;
+    emptyStatusTracking: {
+      totalTracked: number;
+      withMessages: number;
+      recentlyProcessed: Array<{
+        key: string;
+        firstSeen: string;
+        lastProcessed: string;
+        processCount: number;
+        messagesSent: string[];
+      }>;
+    };
   } {
     const recentUpdates = [];
     
@@ -1537,9 +1620,34 @@ export class AutomationEngine {
       }
     }
 
+    // Get empty status tracking info
+    const emptyStatusInfo = [];
+    let withMessages = 0;
+    
+    for (const [key, tracking] of this.emptyStatusOrdersTracking.entries()) {
+      if (tracking.messagesSent.size > 0) {
+        withMessages++;
+      }
+      
+      emptyStatusInfo.push({
+        key,
+        firstSeen: new Date(tracking.firstSeen).toLocaleString('ar-EG'),
+        lastProcessed: new Date(tracking.lastProcessed).toLocaleString('ar-EG'),
+        processCount: tracking.processCount,
+        messagesSent: Array.from(tracking.messagesSent)
+      });
+    }
+
     return {
       trackedUpdatedOrders: this.updatedFromEmptyStatus.size,
-      recentUpdates: recentUpdates.sort((a, b) => b.timestamp - a.timestamp)
+      recentUpdates: recentUpdates.sort((a, b) => b.timestamp - a.timestamp),
+      emptyStatusTracking: {
+        totalTracked: this.emptyStatusOrdersTracking.size,
+        withMessages,
+        recentlyProcessed: emptyStatusInfo
+          .sort((a, b) => b.processCount - a.processCount)
+          .slice(0, 10) // Top 10 most processed
+      }
     };
   }
 
