@@ -248,11 +248,19 @@ export default function PersistentWhatsAppManager({
         {status.connection.qrCode && (
           <div className="text-center p-4 bg-blue-50 rounded-lg">
             <p className="font-medium text-blue-800 mb-3">امسح الكود لتسجيل الدخول</p>
-            <img 
-              src={status.connection.qrCode} 
-              alt="QR Code" 
-              className="mx-auto max-w-xs border rounded-lg"
-            />
+            <div className="flex justify-center">
+              <img 
+                src={status.connection.qrCode} 
+                alt="QR Code" 
+                className="max-w-xs border rounded-lg shadow-md"
+                style={{ maxWidth: '300px', maxHeight: '300px' }}
+                onError={(e) => {
+                  console.error('QR Code image load error:', e);
+                  // Hide the image if it fails to load
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
+              />
+            </div>
             <p className="text-sm text-blue-600 mt-2">
               استخدم تطبيق الواتساب لمسح الكود
             </p>

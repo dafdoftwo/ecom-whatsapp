@@ -9,8 +9,6 @@ export async function GET() {
     
     // Get detailed session info
     const sessionInfo = await whatsapp.getDetailedSessionInfo();
-    const canRestore = await whatsapp.canRestoreSession();
-    const isCorrupted = await whatsapp.isSessionCorrupted();
     
     // Determine action suggestion based on current state
     let actionSuggestion = 'needs_initialization';
@@ -19,13 +17,10 @@ export async function GET() {
     if (status.isConnected) {
       actionSuggestion = 'connected';
       message = 'متصل ويعمل بشكل طبيعي';
-    } else if (health.isInitializing) {
-      actionSuggestion = 'connecting';
-      message = 'جاري الاتصال...';
-    } else if (isCorrupted) {
+    } else if (health.sessionHealth === 'critical') {
       actionSuggestion = 'corrupted_session';
       message = 'الجلسة معطلة - يُنصح بالمسح وإعادة التشغيل';
-    } else if (canRestore) {
+    } else if (sessionInfo.canRestore) {
       actionSuggestion = 'can_restore';
       message = 'يمكن إعادة الاتصال - جلسة محفوظة';
     } else if (status.sessionExists && !status.isConnected) {
@@ -41,29 +36,29 @@ export async function GET() {
       needsQRScan: !!status.qrCode && !status.isConnected,
       sessionStatus: sessionInfo.isValid ? 'valid' : 'invalid',
       message,
-      canRestoreSession: canRestore,
-      isSessionCorrupted: isCorrupted,
+      canRestoreSession: sessionInfo.canRestore,
+      isSessionCorrupted: health.sessionHealth === 'critical',
       actionSuggestion,
       health: {
-        isHealthy: health.isHealthy,
-        lastHealthCheck: health.lastHealthCheck.toISOString(),
-        uptime: health.uptime,
-        status: health.status,
+        isHealthy: health.sessionHealth === 'healthy',
+        lastHealthCheck: health.lastHeartbeat ? new Date(health.lastHeartbeat).toISOString() : new Date().toISOString(),
+        uptime: health.totalUptime,
+        status: health.sessionHealth,
         reconnectAttempts: health.reconnectAttempts,
         isInitializing: health.isInitializing
       },
       debug: {
         reconnectAttempts: health.reconnectAttempts,
         isInitializing: health.isInitializing,
-        lastHealthCheck: health.lastHealthCheck.toISOString(),
-        uptime: health.uptime
+        lastHealthCheck: health.lastHeartbeat ? new Date(health.lastHeartbeat).toISOString() : new Date().toISOString(),
+        uptime: health.totalUptime
       },
       clientInfo: status.clientInfo || null,
       sessionInfo: {
         exists: sessionInfo.exists,
         isValid: sessionInfo.isValid,
-        sizeMB: sessionInfo.sizeMB,
-        path: sessionInfo.path
+        sizeMB: sessionInfo.size,
+        path: 'whatsapp-session-persistent'
       },
       timestamp: new Date().toISOString()
     };

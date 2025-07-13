@@ -2,6 +2,32 @@ import { Client, LocalAuth, ClientInfo } from 'whatsapp-web.js';
 import { ensureFetchPolyfill } from '../utils/fetch-polyfill';
 import fs from 'fs';
 import path from 'path';
+import * as QRCode from 'qrcode';
+
+// Helper function to convert QR code to data URL
+const qrCodeToDataURL = async (qrCode: string): Promise<string> => {
+  try {
+    // If it's already a data URL, return as is
+    if (qrCode.startsWith('data:')) {
+      return qrCode;
+    }
+    
+    // Generate data URL from QR string
+    const dataURL = await QRCode.toDataURL(qrCode, {
+      width: 300,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      }
+    });
+    
+    return dataURL;
+  } catch (error) {
+    console.error('Error converting QR code to data URL:', error);
+    return qrCode; // Return original if conversion fails
+  }
+};
 
 // Enhanced configuration for persistent connection
 const PERSISTENT_CONFIG = {
@@ -318,9 +344,25 @@ export class WhatsAppPersistentConnection {
     if (!this.client) return;
     
     // QR Code generation
-    this.client.on('qr', (qr) => {
+    this.client.on('qr', async (qr) => {
       console.log('📱 QR Code generated for authentication');
-      this.qrCode = qr;
+      console.log('🔍 QR Code raw data length:', qr.length);
+      
+      try {
+        // Convert QR code to data URL for browser display
+        const dataURL = await qrCodeToDataURL(qr);
+        this.qrCode = dataURL;
+        
+        console.log('✅ QR Code converted to data URL format');
+        console.log('🔍 Data URL length:', dataURL.length);
+        console.log('🔍 Data URL starts with:', dataURL.substring(0, 50) + '...');
+        
+      } catch (error) {
+        console.error('❌ Error converting QR code to data URL:', error);
+        // Fallback to original QR code string
+        this.qrCode = qr;
+        console.log('⚠️ Using original QR code as fallback');
+      }
     });
     
     // Client ready
@@ -729,7 +771,7 @@ export class WhatsAppPersistentConnection {
   /**
    * Handle authentication failure
    */
-  private async handleAuthFailure(): void {
+  private async handleAuthFailure(): Promise<void> {
     console.log('🔐 Authentication failed, clearing session...');
     await this.clearSession();
     this.connectionHealth.sessionHealth = 'critical';
