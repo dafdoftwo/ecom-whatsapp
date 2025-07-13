@@ -1036,9 +1036,15 @@ export class AutomationEngine {
     }
     
     try {
-      return template
+      console.log(`🔄 Replacing message variables for order ${row.orderId}:`);
+      console.log(`   - Name: "${row.name}"`);
+      console.log(`   - ProductName: "${row.productName}"`);
+      console.log(`   - Template: "${template.substring(0, 100)}..."`);
+      
+      const result = template
         .replace(/\{name\}/g, row.name || 'عميل عزيز')
         .replace(/\{product\}/g, row.productName || 'المنتج')
+        .replace(/\{productName\}/g, row.productName || 'المنتج')
         .replace(/\{price\}/g, row.totalPrice?.toString() || 'السعر')
         .replace(/\{orderId\}/g, row.orderId || 'رقم الطلب')
         .replace(/\{phone\}/g, row.processedPhone || row.phone || 'رقم الهاتف')
@@ -1053,6 +1059,9 @@ export class AutomationEngine {
         .replace(/\{trackingNumber\}/g, row.orderId || 'رقم التتبع')
         .replace(/\{quantity\}/g, row.quantity || '1')
         .replace(/\{total\}/g, row.totalPrice?.toString() || 'الإجمالي');
+      
+      console.log(`✅ Message after replacement: "${result.substring(0, 150)}..."`);
+      return result;
     } catch (error) {
       console.error('❌ Error in replaceMessageVariables:', error);
       console.error('Template:', template);
