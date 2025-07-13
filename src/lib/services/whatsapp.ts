@@ -47,6 +47,9 @@ const SESSION_CONFIG = {
   QR_GENERATION_TIMEOUT_MS: 30000, // 🔧 FIX: timeout خاص لتوليد QR
   MAX_INIT_RETRIES: 3, // 🔧 FIX: زيادة المحاولات إلى 3
   HEALTH_CHECK_INTERVAL_MS: 30000, // 30 seconds
+  // 🔧 NEW: Process isolation settings
+  PROCESS_CLEANUP_TIMEOUT: 10000, // 10 seconds for process cleanup
+  FORCE_KILL_TIMEOUT: 5000, // 5 seconds before force kill
 };
 
 export class WhatsAppService {
@@ -61,15 +64,136 @@ export class WhatsAppService {
   private isInitializing: boolean = false;
   private initializationPromise: Promise<void> | null = null;
   private initRetries: number = 0;
+  // 🔧 NEW: Process management
+  private browserProcessPid: number | null = null;
+  private sessionLockPath: string | null = null;
 
   private constructor() {
     // Private constructor for singleton pattern
     // Start connection health monitoring
     this.startHealthMonitoring();
+    
+    // 🔧 NEW: Setup process cleanup handlers
+    this.setupProcessCleanupHandlers();
   }
 
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck: Date = new Date();
+
+  // 🔧 NEW: Setup cleanup handlers for graceful shutdown
+  private setupProcessCleanupHandlers(): void {
+    const cleanup = async () => {
+      console.log('🧹 Process cleanup triggered - cleaning browser processes...');
+      await this.forceCleanupBrowserProcesses();
+    };
+
+    // Handle various exit scenarios
+    process.on('SIGINT', cleanup);
+    process.on('SIGTERM', cleanup);
+    process.on('SIGQUIT', cleanup);
+    process.on('exit', cleanup);
+    process.on('uncaughtException', cleanup);
+    process.on('unhandledRejection', cleanup);
+  }
+
+  // 🔧 NEW: Force cleanup of browser processes and locks
+  private async forceCleanupBrowserProcesses(): Promise<void> {
+    try {
+      console.log('🔄 Force cleaning browser processes and locks...');
+      
+      // Kill browser process if we have PID
+      if (this.browserProcessPid) {
+        try {
+          const { exec } = await import('child_process');
+          const { promisify } = await import('util');
+          const execAsync = promisify(exec);
+          
+          // Kill the specific browser process
+          await execAsync(`kill -9 ${this.browserProcessPid} 2>/dev/null || true`);
+          console.log(`🔫 Killed browser process ${this.browserProcessPid}`);
+          this.browserProcessPid = null;
+        } catch (error) {
+          console.warn('⚠️ Could not kill browser process:', error);
+        }
+      }
+      
+      // Clean up singleton lock files
+      if (this.sessionLockPath && fs.existsSync(this.sessionLockPath)) {
+        try {
+          await fs.promises.unlink(this.sessionLockPath);
+          console.log('🗑️ Removed singleton lock file');
+        } catch (error) {
+          console.warn('⚠️ Could not remove lock file:', error);
+        }
+      }
+      
+      // Force kill any remaining Chrome processes
+      try {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        
+        // Kill any remaining Chrome processes related to our session
+        await execAsync(`pkill -f "chromium.*${SESSION_CONFIG.CLIENT_ID}" 2>/dev/null || true`);
+        await execAsync(`pkill -f "chrome.*${SESSION_CONFIG.CLIENT_ID}" 2>/dev/null || true`);
+        console.log('🧹 Cleaned up any remaining Chrome processes');
+      } catch (error) {
+        console.warn('⚠️ Could not clean Chrome processes:', error);
+      }
+      
+    } catch (error) {
+      console.error('❌ Error in force cleanup:', error);
+    }
+  }
+
+  // 🔧 NEW: Clean singleton locks before initialization
+  private async cleanSingletonLocks(): Promise<void> {
+    try {
+      const sessionPath = path.resolve(SESSION_CONFIG.SESSION_PATH);
+      const lockPath = path.join(sessionPath, `session-${SESSION_CONFIG.CLIENT_ID}`, 'SingletonLock');
+      this.sessionLockPath = lockPath;
+      
+      if (fs.existsSync(lockPath)) {
+        console.log('🔧 Found existing singleton lock, removing...');
+        await fs.promises.unlink(lockPath);
+        console.log('✅ Singleton lock removed');
+      }
+      
+      // Also check for browser lock files recursively
+      const sessionDirPath = path.join(sessionPath, `session-${SESSION_CONFIG.CLIENT_ID}`);
+      if (fs.existsSync(sessionDirPath)) {
+        await this.removeLockFilesRecursively(sessionDirPath);
+      }
+      
+    } catch (error) {
+      console.warn('⚠️ Error cleaning singleton locks:', error);
+    }
+  }
+
+  // 🔧 NEW: Recursively remove lock files
+  private async removeLockFilesRecursively(dirPath: string): Promise<void> {
+    try {
+      const items = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      
+      for (const item of items) {
+        const fullPath = path.join(dirPath, item.name);
+        
+        if (item.isDirectory()) {
+          await this.removeLockFilesRecursively(fullPath);
+        } else if (item.name.includes('Lock') || item.name.includes('lock')) {
+          try {
+            await fs.promises.unlink(fullPath);
+            console.log(`🗑️ Removed lock file: ${item.name}`);
+          } catch (error) {
+            console.warn(`⚠️ Could not remove lock file ${item.name}:`, error);
+          }
+        }
+      }
+    } catch (error) {
+      // Directory might not exist or be readable, that's okay
+      console.warn(`⚠️ Could not read directory ${dirPath}:`, error);
+    }
+  }
 
   private startHealthMonitoring(): void {
     // Check connection health every 30 seconds
@@ -268,6 +392,12 @@ export class WhatsAppService {
       // Step 1: Clean up old sessions first
       await this.cleanupOldSessions();
 
+      // Step 1.5: 🔧 NEW: Clean singleton locks to prevent lock errors
+      console.log('🔧 Cleaning singleton locks and browser processes...');
+      await this.forceCleanupBrowserProcesses();
+      await this.cleanSingletonLocks();
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Give time for cleanup
+
       // Step 2: Validate current session
       const sessionValidation = await this.validateSession();
       if (!sessionValidation.isValid && sessionValidation.shouldCleanup) {
@@ -320,7 +450,17 @@ export class WhatsAppService {
             '--disable-features=TranslateUI,VizDisplayCompositor',
             '--memory-pressure-off',
           '--max_old_space_size=4096',
-          '--disable-ipc-flooding-protection'
+          '--disable-ipc-flooding-protection',
+          // 🔧 NEW: Process isolation and singleton lock fixes
+          '--disable-browser-side-navigation',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-sync',
+          '--disable-background-networking',
+          '--force-process-singleton-off', // 🔧 CRITICAL: Disable singleton lock
+          '--user-data-dir-name=' + SESSION_CONFIG.CLIENT_ID, // 🔧 CRITICAL: Unique data dir
+          '--disable-file-system', // 🔧 Prevent file lock conflicts
+          '--no-first-run-extensions'
         ]
       };
 
@@ -336,7 +476,13 @@ export class WhatsAppService {
             '--disable-client-side-phishing-detection',
           '--no-crash-upload',
           '--disable-hang-monitor',
-          '--disable-prompt-on-repost'
+          '--disable-prompt-on-repost',
+          // 🔧 NEW: Railway-specific process isolation
+          '--no-process-per-site',
+          '--disable-site-isolation-trials',
+          '--disable-features=VizDisplayCompositor,VizServiceDisplay',
+          '--remote-debugging-port=0', // 🔧 Disable remote debugging to prevent conflicts
+          '--disable-logging'
         );
       }
       
@@ -356,6 +502,9 @@ export class WhatsAppService {
       console.log('🎯 Setting up event handlers...');
       this.setupEventHandlers();
       
+      // Step 7.5: 🔧 NEW: Track browser process for cleanup
+      this.trackBrowserProcess();
+      
       // Step 8: Initialize with enhanced timeout and retry logic
       console.log('🚀 Starting WhatsApp client initialization...');
       
@@ -371,6 +520,9 @@ export class WhatsAppService {
           
           await Promise.race([initPromise, timeoutPromise]);
           console.log('✅ WhatsApp client initialized successfully');
+          
+          // 🔧 NEW: Update browser process tracking after successful init
+          this.trackBrowserProcess();
           
         } catch (error) {
           console.error(`❌ Initialization attempt ${attempt} failed:`, error);
@@ -986,6 +1138,9 @@ export class WhatsAppService {
     try {
       console.log('🧹 Clearing WhatsApp session...');
       
+      // 🔧 NEW: Force cleanup browser processes and locks first
+      await this.forceCleanupBrowserProcesses();
+      
       // First logout if connected
       if (this.client && this.isConnected) {
         await this.logout();
@@ -993,6 +1148,9 @@ export class WhatsAppService {
       
       // Cleanup client
       await this.cleanup();
+      
+      // 🔧 NEW: Clean singleton locks after client cleanup
+      await this.cleanSingletonLocks();
       
       // Clear current session files
       const sessionPath = path.resolve(SESSION_CONFIG.SESSION_PATH);
@@ -1003,6 +1161,9 @@ export class WhatsAppService {
 
       // Also clear any old session directories
       await this.cleanupOldSessions();
+      
+      // 🔧 NEW: Final cleanup to ensure all locks are removed
+      await this.forceCleanupBrowserProcesses();
       
       this.resetState();
       console.log('✅ All session data cleared successfully');
@@ -1196,6 +1357,27 @@ export class WhatsAppService {
         needsQR: await this.checkSessionExists() === false,
         message: `فشل في الاتصال: ${error instanceof Error ? error.message : 'خطأ غير معروف'}`
       };
+    }
+  }
+
+  /**
+   * 🔧 NEW: Track the browser process ID after successful initialization
+   */
+  private trackBrowserProcess(): void {
+    try {
+      if (this.client && this.client.pupBrowser) {
+        const process = this.client.pupBrowser.process();
+        if (process && process.pid) {
+          this.browserProcessPid = process.pid;
+          console.log(`📦 Browser process ID tracked: ${this.browserProcessPid}`);
+        } else {
+          console.warn('⚠️ Browser process not available for tracking');
+        }
+      } else {
+        console.warn('⚠️ Could not track browser process ID: client or pupBrowser not available');
+      }
+    } catch (error) {
+      console.warn('⚠️ Error tracking browser process:', error);
     }
   }
 } 
