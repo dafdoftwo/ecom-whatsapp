@@ -42,9 +42,10 @@ const SESSION_CONFIG = {
   CLIENT_ID: 'whatsapp-automation-pro',
   SESSION_PATH: './whatsapp-session-pro',
   MAX_SESSION_SIZE_MB: 200, // Maximum session size before cleanup
-  SESSION_TIMEOUT_MS: 20000, // تقليل إلى 20 ثانية بدلاً من 45
-  PUPPETEER_TIMEOUT_MS: 15000, // تقليل إلى 15 ثانية بدلاً من 30
-  MAX_INIT_RETRIES: 2,
+  SESSION_TIMEOUT_MS: 60000, // 🔧 FIX: زيادة إلى 60 ثانية بدلاً من 20
+  PUPPETEER_TIMEOUT_MS: 45000, // 🔧 FIX: زيادة إلى 45 ثانية بدلاً من 15
+  QR_GENERATION_TIMEOUT_MS: 30000, // 🔧 FIX: timeout خاص لتوليد QR
+  MAX_INIT_RETRIES: 3, // 🔧 FIX: زيادة المحاولات إلى 3
   HEALTH_CHECK_INTERVAL_MS: 30000, // 30 seconds
 };
 
@@ -348,26 +349,69 @@ export class WhatsAppService {
         }),
         puppeteer: puppeteerConfig,
         takeoverOnConflict: true,
-        takeoverTimeoutMs: 10000
+        takeoverTimeoutMs: 15000 // 🔧 FIX: زيادة timeout لـ takeover
       });
 
       // Step 7: Setup event handlers
       console.log('🎯 Setting up event handlers...');
       this.setupEventHandlers();
       
-      // Step 8: Initialize with timeout
+      // Step 8: Initialize with enhanced timeout and retry logic
       console.log('🚀 Starting WhatsApp client initialization...');
       
-      const initPromise = this.client.initialize();
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error(`WhatsApp initialization timeout after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds`));
-        }, SESSION_CONFIG.SESSION_TIMEOUT_MS);
-      });
+      // 🔧 FIX: تحسين آلية الـ timeout مع إمكانية إعادة المحاولة
+      const initWithRetry = async (attempt: number = 1): Promise<void> => {
+        try {
+          const initPromise = this.client!.initialize();
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => {
+              reject(new Error(`WhatsApp initialization timeout after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds (attempt ${attempt})`));
+            }, SESSION_CONFIG.SESSION_TIMEOUT_MS);
+          });
+          
+          await Promise.race([initPromise, timeoutPromise]);
+          console.log('✅ WhatsApp client initialized successfully');
+          
+        } catch (error) {
+          console.error(`❌ Initialization attempt ${attempt} failed:`, error);
+          
+          if (attempt < SESSION_CONFIG.MAX_INIT_RETRIES) {
+            console.log(`🔄 Retrying initialization (${attempt + 1}/${SESSION_CONFIG.MAX_INIT_RETRIES})...`);
+            
+            // Clean up failed client
+            if (this.client) {
+              try {
+                await this.cleanup();
+              } catch (cleanupError) {
+                console.warn('Cleanup error during retry:', cleanupError);
+              }
+            }
+            
+            // Wait before retry (exponential backoff)
+            const retryDelay = Math.min(5000 * Math.pow(2, attempt - 1), 30000);
+            console.log(`⏰ Waiting ${retryDelay / 1000} seconds before retry...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            
+            // Recreate client for retry
+            this.client = new Client({
+              authStrategy: new LocalAuth({
+                clientId: SESSION_CONFIG.CLIENT_ID,
+                dataPath: SESSION_CONFIG.SESSION_PATH
+              }),
+              puppeteer: puppeteerConfig,
+              takeoverOnConflict: true,
+              takeoverTimeoutMs: 15000
+            });
+            
+            this.setupEventHandlers();
+            return initWithRetry(attempt + 1);
+          }
+          
+          throw error;
+        }
+      };
       
-      await Promise.race([initPromise, timeoutPromise]);
-      
-      console.log('✅ WhatsApp client initialized successfully');
+      await initWithRetry();
       this.initRetries = 0; // Reset retry count on success
       
     } catch (error) {
@@ -382,53 +426,70 @@ export class WhatsAppService {
         }
       }
       
-      // Handle retries
-      if (this.initRetries < SESSION_CONFIG.MAX_INIT_RETRIES) {
-        this.initRetries++;
-        console.log(`🔄 Retry ${this.initRetries}/${SESSION_CONFIG.MAX_INIT_RETRIES}: Clearing session and retrying...`);
-        await this.clearSession();
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        return this.doInitialize();
+      // 🔧 FIX: تحسين رسائل الخطأ ليفهم المستخدم ما يحدث
+      if (error instanceof Error) {
+        if (error.message.includes('timeout')) {
+          throw new Error(`WhatsApp initialization timed out after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds. This can happen due to slow network or server overload. Please wait a moment and try again. If the problem persists, try clearing the session.`);
+        } else if (error.message.includes('Protocol error') || error.message.includes('Target closed')) {
+          throw new Error('WhatsApp browser connection failed. This can happen on cloud servers. Please try clearing the session and reconnecting.');
+        } else if (error.message.includes('net::ERR_')) {
+          throw new Error('Network error occurred during WhatsApp connection. Please check your internet connection and try again.');
+        }
       }
       
-      // Check if it's a timeout error and suggest clearing session
-      if (error instanceof Error && error.message.includes('timeout')) {
-        throw new Error(`WhatsApp initialization timed out after ${SESSION_CONFIG.SESSION_TIMEOUT_MS / 1000} seconds. Session may be corrupted. Please clear the session and try again.`);
-      }
-      
-      throw new Error(`Failed to initialize WhatsApp client: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw new Error(`Failed to initialize WhatsApp client: ${error instanceof Error ? error.message : 'Unknown error'}. Please try clearing the session if this persists.`);
     }
   }
 
   private setupEventHandlers(): void {
     if (!this.client) return;
 
-    // QR Code generation
+    // 🔧 FIX: QR Code generation with enhanced timeout handling
     this.client.on('qr', async (qr) => {
       try {
-        console.log('📱 QR Code received from WhatsApp - waiting for scan...');
-        // Generate QR code as data URL for proper display in browser
-        this.qrCode = await QRCode.toDataURL(qr, {
-          errorCorrectionLevel: 'M',
-          type: 'image/png',
-          margin: 2,
-          color: {
-            dark: '#000000',
-            light: '#FFFFFF'
-          },
-          width: 256
-        });
-        console.log('✅ QR Code generated successfully - length:', this.qrCode.length);
-        console.log('👆 Please scan the QR code with your WhatsApp mobile app');
+        console.log('📱 QR Code received from WhatsApp - generating image...');
+        
+        // Start QR generation timeout
+        const qrTimeoutId = setTimeout(() => {
+          console.warn('⏰ QR Code generation taking too long, using fallback...');
+          // Use raw QR as fallback
+          this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
+        }, 10000); // 10 seconds timeout for QR generation
+        
+        try {
+          // Generate QR code as data URL for proper display in browser
+          this.qrCode = await QRCode.toDataURL(qr, {
+            errorCorrectionLevel: 'M',
+            type: 'image/png',
+            margin: 2,
+            color: {
+              dark: '#000000',
+              light: '#FFFFFF'
+            },
+            width: 256
+          });
+          
+          clearTimeout(qrTimeoutId);
+          console.log('✅ QR Code generated successfully - length:', this.qrCode.length);
+          console.log('👆 Please scan the QR code with your WhatsApp mobile app');
+          console.log('⏰ QR Code will expire in 20 seconds - scan quickly!');
+          
+        } catch (qrError) {
+          clearTimeout(qrTimeoutId);
+          console.error('❌ Error generating QR code image:', qrError);
+          // Fallback: store raw QR string if image generation fails
+          this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
+          console.log('📝 Using raw QR as fallback');
+        }
+        
       } catch (error) {
-        console.error('❌ Error generating QR code:', error);
-        // Fallback: store raw QR string if image generation fails
-        this.qrCode = `data:text/plain;base64,${Buffer.from(qr).toString('base64')}`;
-        console.log('📝 Using raw QR as fallback');
+        console.error('❌ Critical error in QR handler:', error);
+        // Even if everything fails, try to store something
+        this.qrCode = qr;
       }
     });
 
-    // Authentication events
+    // 🔧 FIX: Enhanced authentication events with better logging
     this.client.on('authenticated', () => {
       console.log('🔐 WhatsApp authenticated successfully - user scanned QR code!');
       this.isConnected = true;
@@ -440,9 +501,18 @@ export class WhatsAppService {
       console.log('❌ WhatsApp authentication failed:', message);
       this.isConnected = false;
       this.qrCode = null;
+      
+      // 🔧 FIX: Provide helpful error messages
+      if (typeof message === 'string') {
+        if (message.includes('timeout') || message.includes('Timeout')) {
+          console.log('⏰ Authentication timed out - QR Code may have expired. Please regenerate.');
+        } else if (message.includes('session') || message.includes('Session')) {
+          console.log('🗑️ Session authentication failed - consider clearing the session.');
+        }
+      }
     });
 
-    // Ready event - This is when WhatsApp is fully connected and ready
+    // 🔧 FIX: Enhanced ready event with better status tracking
     this.client.on('ready', () => {
       console.log('🎉 WhatsApp client is ready and fully connected!');
       this.isConnected = true;
@@ -455,10 +525,11 @@ export class WhatsAppService {
       
       if (this.clientInfo) {
         console.log(`📞 Connected as: ${this.clientInfo.pushname} (${this.clientInfo.wid.user})`);
+        console.log('🎯 WhatsApp is now ready to send and receive messages!');
       }
     });
 
-    // Disconnection events - Enhanced handling
+    // 🔧 FIX: Enhanced disconnection events with smart reconnection
     this.client.on('disconnected', (reason) => {
       console.log('🔌 WhatsApp disconnected:', reason);
       this.isConnected = false;
@@ -479,9 +550,19 @@ export class WhatsAppService {
       }
     });
 
-    // Loading screen events
+    // 🔧 FIX: Enhanced loading screen events
     this.client.on('loading_screen', (percent, message) => {
       console.log(`⏳ WhatsApp loading: ${percent}% - ${message}`);
+      
+      // Provide user-friendly status updates
+      const percentNum = typeof percent === 'string' ? parseInt(percent) : percent;
+      if (percentNum >= 90) {
+        console.log('🔄 Almost ready... finalizing connection...');
+      } else if (percentNum >= 50) {
+        console.log('📱 Loading WhatsApp interface...');
+      } else if (percentNum >= 20) {
+        console.log('🌐 Establishing connection...');
+      }
     });
 
     // Remote session saved event
@@ -489,13 +570,38 @@ export class WhatsAppService {
       console.log('💾 Remote session saved successfully');
     });
 
-    // Additional debugging events
+    // 🔧 FIX: Additional debugging events with helpful information
     this.client.on('change_state', (state) => {
       console.log(`🔄 WhatsApp state changed to: ${state}`);
+      
+      // Provide context for different states
+      const stateStr = String(state);
+      switch (stateStr) {
+        case 'INITIALIZING':
+          console.log('🚀 WhatsApp is starting up...');
+          break;
+        case 'AUTHENTICATING':
+          console.log('🔐 WhatsApp is authenticating...');
+          break;
+        case 'READY':
+          console.log('✅ WhatsApp is ready!');
+          break;
+        case 'DISCONNECTED':
+          console.log('🔌 WhatsApp is disconnected');
+          break;
+      }
     });
-
-    this.client.on('change_battery', (batteryInfo) => {
-      console.log(`🔋 Phone battery: ${batteryInfo.battery}% (${batteryInfo.plugged ? 'charging' : 'not charging'})`);
+    
+    // 🔧 FIX: Add error event handler
+    this.client.on('error', (error) => {
+      console.error('❌ WhatsApp client error:', error);
+      
+      // Handle specific error types
+      if (error.message.includes('Protocol error')) {
+        console.log('🔧 Browser protocol error detected - may need session clearing');
+      } else if (error.message.includes('timeout')) {
+        console.log('⏰ Operation timeout - this is usually temporary');
+      }
     });
   }
 
