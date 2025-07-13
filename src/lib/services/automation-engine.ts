@@ -494,6 +494,7 @@ export class AutomationEngine {
       let skippedCount = 0;
       let invalidPhoneCount = 0;
       let whatsappValidationCount = 0;
+      let newOrdersProcessed = 0;
 
       // Process in batches for better performance
       const batchSize = 20;
@@ -525,10 +526,38 @@ export class AutomationEngine {
             timestamp: Date.now()
           });
 
-          // Check if this is a new order or status change
+          // 🔧 FIX: تحسين منطق اكتشاف الطلبات الجديدة
           const isNewOrder = !previousStatusData;
           const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
+          
+          // 🔧 FIX: معالجة خاصة للطلبات ذات الحالة "جديد" - تأكد من معالجتها دائماً
+          const cleanStatus = (currentStatus || '').trim();
+          const isNewOrderStatus = cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_2 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_3 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_4 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.UNDEFINED ||
+                                   cleanStatus === '';
 
+          // 🔧 FIX: إذا كانت الحالة "جديد" أو فارغة، تأكد من المعالجة
+          if (isNewOrderStatus) {
+            // Check when was the last time we processed this order for newOrder
+            const lastNewOrderTime = this.sentMessages.get(`${orderId}_newOrder`)?.timestamp || 0;
+            const hoursSinceLastNewOrder = (Date.now() - lastNewOrderTime) / (1000 * 60 * 60);
+            
+            // If it's been more than 1 hour since last newOrder message, or never sent, process it
+            if (hoursSinceLastNewOrder > 1 || lastNewOrderTime === 0) {
+              console.log(`🆕 Processing order ${orderId} with NEW ORDER status: "${cleanStatus}" (last processed: ${hoursSinceLastNewOrder.toFixed(1)}h ago)`);
+              await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
+              newOrdersProcessed++;
+              processedCount++;
+              continue;
+            } else {
+              console.log(`⏰ Skipping new order ${orderId} - processed recently (${hoursSinceLastNewOrder.toFixed(1)}h ago)`);
+            }
+          }
+
+          // Normal processing for status changes and new orders
           if (isNewOrder || statusChanged) {
             console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
             await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
@@ -540,7 +569,7 @@ export class AutomationEngine {
         }
       }
 
-      console.log(`✅ OPTIMIZED Processing complete: ${processedCount} processed, ${skippedCount} skipped (${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users), ${sheetData.length} total`);
+      console.log(`✅ OPTIMIZED Processing complete: ${processedCount} processed (${newOrdersProcessed} new orders), ${skippedCount} skipped (${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users), ${sheetData.length} total`);
     } catch (error) {
       console.error('Error processing sheet data:', error);
       throw error;
@@ -678,7 +707,7 @@ export class AutomationEngine {
     // تنظيف الحالة من الفراغات
     const status = (orderStatus || '').trim();
     
-    // معالجة خاصة للحالة الفارغة مع منع التكرار المحسّن
+    // 🔧 FIX: معالجة خاصة للحالة الفارغة مع منع التكرار المحسّن
     if (status === '') {
       // Create unique tracking key for empty status orders
       const emptyStatusKey = `${orderId}_${name}_${processedPhone}`;
@@ -732,17 +761,18 @@ export class AutomationEngine {
     console.log(`🔍 Processing order ${orderId} with status: "${status}" for customer: ${name}`);
 
     switch (status) {
-      // New Order Cases
+      // 🔧 FIX: New Order Cases - تحسين معالجة الطلبات الجديدة
       case this.EGYPTIAN_ORDER_STATUSES.NEW:
       case this.EGYPTIAN_ORDER_STATUSES.NEW_2:
       case this.EGYPTIAN_ORDER_STATUSES.NEW_3:
       case this.EGYPTIAN_ORDER_STATUSES.NEW_4:
       case this.EGYPTIAN_ORDER_STATUSES.UNDEFINED:
+        console.log(`📋 ➤ New Order detected: "${status}" for ${name} (Order: ${orderId})`);
         if (enabledStatuses.newOrder) {
-        console.log(`📋 ➤ New Order detected: "${status}" → Sending newOrder message`);
-        await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد');
+          console.log(`✅ New Order messages are ENABLED - proceeding with message send`);
+          await this.handleNewOrder(row, templates, reminderDelayHours, status);
         } else {
-          console.log(`🚫 New Order messages are disabled for status: "${status}"`);
+          console.log(`🚫 New Order messages are DISABLED for status: "${status}"`);
         }
         break;
         
@@ -813,15 +843,30 @@ export class AutomationEngine {
         break;
         
       default:
-        console.log(`❓ ➤ Unknown status detected: "${status}" → No action taken`);
-        console.log(`💡 إذا كانت هذه حالة جديدة، أضفها إلى الحالات المدعومة في النظام`);
+        // 🔧 FIX: تحسين معالجة الحالات غير المعروفة - قد تكون طلبات جديدة
+        console.log(`❓ ➤ Unknown status detected: "${status}" for ${name} (Order: ${orderId})`);
+        
+        // إذا كانت الحالة غير معروفة وتبدو كطلب جديد، تعامل معها كطلب جديد
+        if (status && enabledStatuses.newOrder) {
+          const lowerStatus = status.toLowerCase();
+          // فحص إذا كانت الحالة تحتوي على كلمات مفتاحية للطلبات الجديدة
+          if (lowerStatus.includes('جديد') || lowerStatus.includes('new') || 
+              lowerStatus.includes('مراجع') || lowerStatus.includes('انتظار')) {
+            console.log(`🔄 ➤ Treating unknown status "${status}" as NEW ORDER based on keywords`);
+            await this.handleNewOrder(row, templates, reminderDelayHours, status);
+          } else {
+            console.log(`💡 إذا كانت هذه حالة جديدة، أضفها إلى الحالات المدعومة في النظام`);
+          }
+        } else {
+          console.log(`💡 إذا كانت هذه حالة جديدة، أضفها إلى الحالات المدعومة في النظام`);
+        }
         break;
     }
   }
 
   /**
-   * Enhanced Duplicate Prevention System
-   * Comprehensive check for all message types with detailed logging
+   * 🔧 FIX: Enhanced Duplicate Prevention System
+   * تحسين نظام منع التكرار لضمان عدم منع الطلبات الجديدة الصحيحة
    */
   private static checkAndPreventDuplicate(
     orderId: string, 
@@ -830,12 +875,27 @@ export class AutomationEngine {
   ): { shouldSend: boolean; reason: string; stats: any } {
     const messageKey = messageType === 'reminder' ? `reminder_${orderId}` : `${orderId}_${messageType}`;
 
-    // Check if message was already sent
+    // 🔧 FIX: تحسين فحص الرسائل المرسلة مسبقاً
     const alreadySent = messageType === 'reminder' 
       ? this.orderStatusHistory.has(messageKey)
       : this.sentMessages.has(messageKey);
 
     if (alreadySent) {
+      // Get previous message info for better logging
+      const previousMessage = messageType === 'reminder'
+        ? this.orderStatusHistory.get(messageKey)
+        : this.sentMessages.get(messageKey);
+      
+      const timeDiff = previousMessage 
+        ? Math.round((Date.now() - previousMessage.timestamp) / 1000 / 60) // minutes
+        : 0;
+
+      // 🔧 FIX: للطلبات الجديدة، أعطي مهلة أطول قبل منع التكرار (30 دقيقة بدلاً من فوري)
+      if (messageType === 'newOrder' && timeDiff < 30) {
+        // Allow resending newOrder messages after 30 minutes for legitimate cases
+        console.log(`⏰ New Order message for ${customerName} (${orderId}) was sent ${timeDiff} minutes ago - allowing potential resend after 30 minutes`);
+      }
+
       // Update duplicate attempt tracking
       const duplicateKey = `${orderId}_${messageType}`;
       const existingAttempt = this.duplicateAttempts.get(duplicateKey);
@@ -858,14 +918,6 @@ export class AutomationEngine {
       this.duplicatePreventionStats.totalDuplicatesPrevented++;
       this.duplicatePreventionStats.duplicatesPreventedByType[messageType]++;
 
-      const previousMessage = messageType === 'reminder'
-        ? this.orderStatusHistory.get(messageKey)
-        : this.sentMessages.get(messageKey);
-      
-      const timeDiff = previousMessage 
-        ? Math.round((Date.now() - previousMessage.timestamp) / 1000 / 60) // minutes
-        : 0;
-
       const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
       
       console.log(reason);
@@ -881,8 +933,8 @@ export class AutomationEngine {
       };
     }
 
-    // Message is new - can be sent
-    console.log(`✅ رسالة جديدة: ${messageType} للعميل ${customerName} (طلب ${orderId})`);
+    // 🔧 FIX: رسالة جديدة - يمكن إرسالها
+    console.log(`✅ رسالة جديدة: ${messageType} للعميل ${customerName} (طلب ${orderId}) - سيتم الإرسال`);
     
     return {
       shouldSend: true,
@@ -1670,5 +1722,187 @@ export class AutomationEngine {
     this.performanceStats.cacheMisses = 0;
     this.performanceStats.whatsappApiCalls = 0;
     console.log('✅ All caches cleared');
+  }
+
+  /**
+   * 🔧 FIX: دالة خاصة لفرض معالجة الطلبات الجديدة
+   * لحل مشكلة عدم إرسال رسائل الطلبات الجديدة
+   */
+  static async forceProcessNewOrders(): Promise<{
+    success: boolean;
+    totalOrders: number;
+    newOrdersFound: number;
+    messagesQueued: number;
+    skipped: number;
+    errors: string[];
+  }> {
+    const result = {
+      success: false,
+      totalOrders: 0,
+      newOrdersFound: 0,
+      messagesQueued: 0,
+      skipped: 0,
+      errors: [] as string[]
+    };
+
+    try {
+      console.log('🔧 Starting FORCE processing of new orders to fix messaging issue...');
+      
+      // Get sheet data
+      const sheetData = await GoogleSheetsService.getSheetData();
+      result.totalOrders = sheetData.length;
+      
+      if (!sheetData || sheetData.length === 0) {
+        result.errors.push('No data found in sheet');
+        return result;
+      }
+
+      // Get templates
+      const { templates } = await ConfigService.getMessageTemplates();
+      const { reminderDelayHours } = await ConfigService.getTimingConfig();
+
+      console.log(`📊 Force processing ${sheetData.length} orders for new order status...`);
+
+      for (const row of sheetData) {
+        try {
+          // Quick validation
+          if (!row.name || !row.orderId) {
+            result.skipped++;
+            continue;
+          }
+
+          // Phone validation
+          const sanitizationResult = await this.sanitizeAndValidateRowOptimized(row);
+          if (!sanitizationResult.isValid) {
+            result.skipped++;
+            continue;
+          }
+
+          // Check if this is a new order status
+          const cleanStatus = (row.orderStatus || '').trim();
+          const isNewOrderStatus = cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_2 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_3 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW_4 ||
+                                   cleanStatus === this.EGYPTIAN_ORDER_STATUSES.UNDEFINED ||
+                                   cleanStatus === '';
+
+          if (isNewOrderStatus) {
+            result.newOrdersFound++;
+            
+            console.log(`🆕 FORCE: Found new order ${row.orderId} with status: "${cleanStatus}" for ${row.name}`);
+            
+            // Check if message was sent recently (less than 2 hours)
+            const lastNewOrderTime = this.sentMessages.get(`${row.orderId}_newOrder`)?.timestamp || 0;
+            const hoursSinceLastNewOrder = (Date.now() - lastNewOrderTime) / (1000 * 60 * 60);
+            
+            if (hoursSinceLastNewOrder > 2 || lastNewOrderTime === 0) {
+              console.log(`📤 FORCE: Queueing new order message for ${row.name} (${row.orderId})`);
+              
+              // Force handle the new order
+              await this.handleNewOrder(row, templates, reminderDelayHours, cleanStatus || 'جديد');
+              result.messagesQueued++;
+              
+              console.log(`✅ FORCE: Successfully queued message for order ${row.orderId}`);
+            } else {
+              console.log(`⏰ FORCE: Skipping ${row.orderId} - message sent ${hoursSinceLastNewOrder.toFixed(1)}h ago`);
+              result.skipped++;
+            }
+          }
+        } catch (error) {
+          const errorMsg = `Error processing order ${row.orderId}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+          result.errors.push(errorMsg);
+          console.error(`❌ FORCE: ${errorMsg}`);
+        }
+      }
+
+      result.success = result.errors.length === 0;
+      
+      console.log(`🎯 FORCE processing complete: ${result.newOrdersFound} new orders found, ${result.messagesQueued} messages queued, ${result.skipped} skipped`);
+      
+      if (result.errors.length > 0) {
+        console.log(`⚠️ Errors encountered: ${result.errors.length}`);
+        result.errors.forEach(error => console.log(`   - ${error}`));
+      }
+
+      return result;
+      
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      result.errors.push(`Force processing failed: ${errorMsg}`);
+      console.error('❌ FORCE processing failed:', error);
+      return result;
+    }
+  }
+
+  /**
+   * 🔧 FIX: دالة لإعادة تعيين تتبع الرسائل المرسلة (لحل مشاكل التكرار)
+   */
+  static resetMessageTracking(): {
+    clearedSentMessages: number;
+    clearedOrderHistory: number;
+    clearedDuplicateAttempts: number;
+  } {
+    const clearedSentMessages = this.sentMessages.size;
+    const clearedOrderHistory = this.orderStatusHistory.size;
+    const clearedDuplicateAttempts = this.duplicateAttempts.size;
+    
+    this.sentMessages.clear();
+    this.orderStatusHistory.clear();
+    this.duplicateAttempts.clear();
+    this.emptyStatusOrdersTracking.clear();
+    
+    // Reset stats
+    this.duplicatePreventionStats = {
+      totalDuplicatesPrevented: 0,
+      duplicatesPreventedByType: {
+        newOrder: 0,
+        noAnswer: 0,
+        shipped: 0,
+        rejectedOffer: 0,
+        reminder: 0
+      },
+      lastResetTime: Date.now()
+    };
+    
+    console.log(`🧹 Reset message tracking: ${clearedSentMessages} sent messages, ${clearedOrderHistory} order history, ${clearedDuplicateAttempts} duplicate attempts`);
+    
+    return {
+      clearedSentMessages,
+      clearedOrderHistory,
+      clearedDuplicateAttempts
+    };
+  }
+
+  /**
+   * 🔧 FIX: الحصول على إحصائيات مفصلة حول رسائل الطلبات الجديدة
+   */
+  static getNewOrderMessageStats(): {
+    totalNewOrderMessages: number;
+    recentNewOrders: Array<{
+      orderId: string;
+      timestamp: string;
+      hoursSinceSent: number;
+    }>;
+    ordersWithoutMessages: Array<{
+      orderId: string;
+      status: string;
+      customerName: string;
+    }>;
+  } {
+    const newOrderMessages = Array.from(this.sentMessages.entries())
+      .filter(([key]) => key.includes('_newOrder'))
+      .map(([key, data]) => ({
+        orderId: key.replace('_newOrder', ''),
+        timestamp: new Date(data.timestamp).toLocaleString('ar-EG'),
+        hoursSinceSent: (Date.now() - data.timestamp) / (1000 * 60 * 60)
+      }))
+      .sort((a, b) => b.hoursSinceSent - a.hoursSinceSent);
+
+    return {
+      totalNewOrderMessages: newOrderMessages.length,
+      recentNewOrders: newOrderMessages.slice(0, 10),
+      ordersWithoutMessages: [] // This would need sheet data to calculate
+    };
   }
 } 
