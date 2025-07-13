@@ -520,16 +520,18 @@ export class AutomationEngine {
           const currentStatus = row.orderStatus;
           const previousStatusData = this.orderStatusHistory.get(orderId);
           
-          // Update status history
+          // 🔧 FIX: تحسين منطق اكتشاف التغييرات في الحالات
+          const isNewOrder = !previousStatusData;
+          const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
+          
+          console.log(`🔍 Order ${orderId}: Current="${currentStatus}" | Previous="${previousStatusData?.status || 'NONE'}" | New=${isNewOrder} | Changed=${statusChanged}`);
+          
+          // Update status history AFTER checking for changes
           this.orderStatusHistory.set(orderId, {
             status: currentStatus,
             timestamp: Date.now()
           });
 
-          // 🔧 FIX: تحسين منطق اكتشاف الطلبات الجديدة
-          const isNewOrder = !previousStatusData;
-          const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
-          
           // 🔧 FIX: معالجة خاصة للطلبات ذات الحالة "جديد" - تأكد من معالجتها دائماً
           const cleanStatus = (currentStatus || '').trim();
           const isNewOrderStatus = cleanStatus === this.EGYPTIAN_ORDER_STATUSES.NEW ||
@@ -545,8 +547,8 @@ export class AutomationEngine {
             const lastNewOrderTime = this.sentMessages.get(`${orderId}_newOrder`)?.timestamp || 0;
             const hoursSinceLastNewOrder = (Date.now() - lastNewOrderTime) / (1000 * 60 * 60);
             
-            // If it's been more than 1 hour since last newOrder message, or never sent, process it
-            if (hoursSinceLastNewOrder > 1 || lastNewOrderTime === 0) {
+            // 🔧 FIX: تقليل الفترة الزمنية إلى 30 دقيقة لضمان الحساسية
+            if (hoursSinceLastNewOrder > 0.5 || lastNewOrderTime === 0) {
               console.log(`🆕 Processing order ${orderId} with NEW ORDER status: "${cleanStatus}" (last processed: ${hoursSinceLastNewOrder.toFixed(1)}h ago)`);
               await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
               newOrdersProcessed++;
@@ -557,9 +559,19 @@ export class AutomationEngine {
             }
           }
 
-          // Normal processing for status changes and new orders
+          // 🔧 FIX: معالجة محسنة لتغييرات الحالات
           if (isNewOrder || statusChanged) {
-            console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
+            console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW ORDER' : 'STATUS CHANGED'} - "${previousStatusData?.status || 'NONE'}" → "${currentStatus}"`);
+            
+            // 🔧 FIX: إضافة فحص إضافي للتأكد من أن التغيير حقيقي
+            if (statusChanged) {
+              const timeSinceLastChange = previousStatusData ? (Date.now() - previousStatusData.timestamp) / (1000 * 60) : 0;
+              console.log(`🔄 Status change detected for ${orderId}: Time since last change: ${timeSinceLastChange.toFixed(1)} minutes`);
+              
+              // 🔧 FIX: تسجيل تفاصيل التغيير للمراجعة
+              console.log(`   📊 Change details: "${previousStatusData?.status}" → "${currentStatus}" (Customer: ${row.name})`);
+            }
+            
             await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
             processedCount++;
           } else if (previousStatusData) {
@@ -890,10 +902,50 @@ export class AutomationEngine {
         ? Math.round((Date.now() - previousMessage.timestamp) / 1000 / 60) // minutes
         : 0;
 
-      // 🔧 FIX: للطلبات الجديدة، أعطي مهلة أطول قبل منع التكرار (30 دقيقة بدلاً من فوري)
-      if (messageType === 'newOrder' && timeDiff < 30) {
-        // Allow resending newOrder messages after 30 minutes for legitimate cases
-        console.log(`⏰ New Order message for ${customerName} (${orderId}) was sent ${timeDiff} minutes ago - allowing potential resend after 30 minutes`);
+      // 🔧 FIX: تحسين منطق السماح بإعادة الإرسال حسب نوع الرسالة
+      let allowResend = false;
+      let minWaitTime = 0;
+      
+      switch (messageType) {
+        case 'newOrder':
+          // 🔧 FIX: للطلبات الجديدة، اسمح بإعادة الإرسال بعد 30 دقيقة
+          minWaitTime = 30;
+          allowResend = timeDiff >= minWaitTime;
+          break;
+        case 'noAnswer':
+          // للحالات "لم يرد"، اسمح بإعادة الإرسال بعد ساعة
+          minWaitTime = 60;
+          allowResend = timeDiff >= minWaitTime;
+          break;
+        case 'shipped':
+          // لرسائل الشحن، اسمح بإعادة الإرسال بعد 4 ساعات
+          minWaitTime = 240;
+          allowResend = timeDiff >= minWaitTime;
+          break;
+        case 'rejectedOffer':
+          // للعروض المرفوضة، اسمح بإعادة الإرسال بعد 24 ساعة
+          minWaitTime = 1440;
+          allowResend = timeDiff >= minWaitTime;
+          break;
+        case 'reminder':
+          // للتذكيرات، اسمح بإعادة الإرسال بعد 12 ساعة
+          minWaitTime = 720;
+          allowResend = timeDiff >= minWaitTime;
+          break;
+      }
+
+      if (allowResend) {
+        console.log(`🔄 Allowing resend of ${messageType} for ${customerName} (${orderId}) - ${timeDiff} minutes passed (min: ${minWaitTime})`);
+        return {
+          shouldSend: true,
+          reason: `إعادة إرسال مسموحة بعد ${timeDiff} دقيقة`,
+          stats: {
+            timeSinceLastMessage: timeDiff,
+            minWaitTime,
+            totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
+            duplicatesForThisOrder: 0
+          }
+        };
       }
 
       // Update duplicate attempt tracking
@@ -918,7 +970,7 @@ export class AutomationEngine {
       this.duplicatePreventionStats.totalDuplicatesPrevented++;
       this.duplicatePreventionStats.duplicatesPreventedByType[messageType]++;
 
-      const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
+      const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId}) - الحد الأدنى: ${minWaitTime} دقيقة`;
       
       console.log(reason);
 
@@ -927,6 +979,7 @@ export class AutomationEngine {
         reason,
         stats: {
           timeSinceLastMessage: timeDiff,
+          minWaitTime,
           totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
           duplicatesForThisOrder: this.duplicateAttempts.get(duplicateKey)?.preventedDuplicates || 1
         }
@@ -1904,5 +1957,31 @@ export class AutomationEngine {
       recentNewOrders: newOrderMessages.slice(0, 10),
       ordersWithoutMessages: [] // This would need sheet data to calculate
     };
+  }
+
+  /**
+   * 🔧 NEW: Get status history for external access
+   */
+  static getStatusHistory(): Map<string, { status: string, timestamp: number }> {
+    return new Map(this.orderStatusHistory);
+  }
+
+  /**
+   * 🔧 NEW: Get sent messages for external access
+   */
+  static getSentMessages(): Map<string, { messageType: string, timestamp: number }> {
+    return new Map(this.sentMessages);
+  }
+
+  /**
+   * 🔧 NEW: Public method to trigger processing from external APIs
+   */
+  static async triggerProcessing(): Promise<void> {
+    if (this.isRunning) {
+      await this.processSheetDataOptimized();
+    } else {
+      console.log('⚠️ Automation engine is not running - starting temporary processing...');
+      await this.processSheetDataOptimized();
+    }
   }
 } 
