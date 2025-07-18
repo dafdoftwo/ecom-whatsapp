@@ -28,32 +28,6 @@ class LocalQueue<T> {
 
   async add(data: T, options?: { delay?: number }): Promise<void> {
     this.items.push({ ...data, delay: options?.delay || 0 });
-    if (!this.isProcessing) {
-      this.processItems();
-    }
-  }
-
-  private async processItems(): Promise<void> {
-    this.isProcessing = true;
-    while (this.items.length > 0) {
-      const item = this.items.shift()!;
-      
-      if (item.delay && item.delay > 0) {
-        await new Promise(resolve => setTimeout(resolve, item.delay));
-      }
-      
-      try {
-        // Process the item based on its type
-        if ('phoneNumber' in item && 'message' in item) {
-          await QueueService.processMessageJob({ data: item as any });
-        } else if ('orderId' in item && 'customerName' in item) {
-          await QueueService.processReminderJob({ data: item as any });
-        }
-      } catch (error) {
-        console.error('Local queue processing error:', error);
-      }
-    }
-    this.isProcessing = false;
   }
 
   async close(): Promise<void> {
@@ -63,6 +37,16 @@ class LocalQueue<T> {
 
   size(): number {
     return this.items.length;
+  }
+
+  // Add method to get items for external processing
+  get currentItems(): Array<T & { delay?: number }> {
+    return [...this.items];
+  }
+
+  // Clear processed items
+  clearItems(): void {
+    this.items = [];
   }
 }
 
@@ -133,33 +117,37 @@ export class QueueService {
           });
 
           // Initialize workers
-          this.messageWorker = await this.messageQueue.add('send-message', {
-            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
-            message: 'placeholder', // Placeholder, will be replaced by actual data
-            orderId: 'placeholder', // Placeholder, will be replaced by actual data
-            rowIndex: 0, // Placeholder, will be replaced by actual data
-            messageType: 'newOrder', // Placeholder, will be replaced by actual data
+          this.messageWorker = new Worker<MessageJob>('message-queue', async (job) => {
+            await this.processMessageJob(job);
           }, {
-            delay: Math.random() * 2000 + 1000, // Add small delay to prevent rate limiting
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
+            concurrency: 1,
           });
 
-          this.reminderWorker = await this.reminderQueue.add('send-reminder', {
-            orderId: 'placeholder', // Placeholder, will be replaced by actual data
-            rowIndex: 0, // Placeholder, will be replaced by actual data
-            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
-            customerName: 'placeholder', // Placeholder, will be replaced by actual data
-            orderStatus: 'placeholder', // Placeholder, will be replaced by actual data
+          this.reminderWorker = new Worker<ReminderJob>('reminder-queue', async (job) => {
+            await this.processReminderJob(job);
           }, {
-            delay: 0, // No delay for immediate reminders
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
+            concurrency: 1,
           });
 
-          this.rejectedOfferWorker = await this.rejectedOfferQueue.add('send-rejected-offer', {
-            orderId: 'placeholder', // Placeholder, will be replaced by actual data
-            rowIndex: 0, // Placeholder, will be replaced by actual data
-            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
-            customerName: 'placeholder', // Placeholder, will be replaced by actual data
+          this.rejectedOfferWorker = new Worker<ReminderJob>('rejected-offer-queue', async (job) => {
+            await this.processRejectedOfferJob(job);
           }, {
-            delay: 0, // No delay for immediate rejected offers
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
+            concurrency: 1,
           });
 
           // Set up error handlers
@@ -209,33 +197,76 @@ export class QueueService {
     this.localProcessingInterval = setInterval(async () => {
       try {
         // Process message queue
-        const messageJobs = await (this.messageQueue as LocalQueue<MessageJob>).items;
-        for (const job of messageJobs) {
-          try {
-            await this.processMessageJob({ data: job } as Job<MessageJob>);
-          } catch (error) {
-            console.error('Error processing local message job:', error);
+        const messageJobs = (this.messageQueue as LocalQueue<MessageJob>).currentItems;
+        if (messageJobs.length > 0) {
+          console.log(`📱 Processing ${messageJobs.length} local message jobs...`);
+          for (const job of messageJobs) {
+            try {
+              // Apply delay if specified
+              if (job.delay && job.delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, job.delay));
+              }
+              
+              // Create proper job structure
+              const jobData = { data: job as MessageJob };
+              await this.processMessageJob(jobData as Job<MessageJob>);
+            } catch (error) {
+              console.error('Error processing local message job:', error);
+            }
           }
+          // Clear processed items
+          (this.messageQueue as LocalQueue<MessageJob>).clearItems();
         }
 
         // Process reminder queue
-        const reminderJobs = await (this.reminderQueue as LocalQueue<ReminderJob>).items;
-        for (const job of reminderJobs) {
-          try {
-            await this.processReminderJob({ data: job } as Job<ReminderJob>);
-          } catch (error) {
-            console.error('Error processing local reminder job:', error);
+        const reminderJobs = (this.reminderQueue as LocalQueue<ReminderJob>).currentItems;
+        if (reminderJobs.length > 0) {
+          console.log(`⏰ Processing ${reminderJobs.length} local reminder jobs...`);
+          for (const job of reminderJobs) {
+            try {
+              // Apply delay if specified
+              if (job.delay && job.delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, job.delay));
+              }
+              
+              // Create proper job structure
+              const jobData = { data: job as ReminderJob };
+              await this.processReminderJob(jobData as Job<ReminderJob>);
+            } catch (error) {
+              console.error('Error processing local reminder job:', error);
+            }
           }
+          // Clear processed items
+          (this.reminderQueue as LocalQueue<ReminderJob>).clearItems();
         }
 
         // Process rejected offer queue
-        const rejectedJobs = await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).items;
-        for (const job of rejectedJobs) {
-          try {
-            await this.processRejectedOfferJob({ data: job } as Job<ReminderJob>);
-          } catch (error) {
-            console.error('Error processing local rejected offer job:', error);
+        const rejectedJobs = (this.rejectedOfferQueue as LocalQueue<ReminderJob>).currentItems;
+        if (rejectedJobs.length > 0) {
+          console.log(`❌ Processing ${rejectedJobs.length} local rejected offer jobs...`);
+          for (const job of rejectedJobs) {
+            try {
+              // Apply delay if specified
+              if (job.delay && job.delay > 0) {
+                await new Promise(resolve => setTimeout(resolve, job.delay));
+              }
+              
+              // Create proper job structure with proper ReminderJob interface
+              const reminderJobData: ReminderJob = {
+                orderId: job.orderId,
+                rowIndex: job.rowIndex,
+                phoneNumber: job.phoneNumber,
+                customerName: job.customerName,
+                orderStatus: 'رفض الاستلام' // Default status for rejected offers
+              };
+              const jobData = { data: reminderJobData };
+              await this.processRejectedOfferJob(jobData as Job<ReminderJob>);
+            } catch (error) {
+              console.error('Error processing local rejected offer job:', error);
+            }
           }
+          // Clear processed items
+          (this.rejectedOfferQueue as LocalQueue<ReminderJob>).clearItems();
         }
       } catch (error) {
         console.error('Error in local queue processing:', error);
@@ -299,7 +330,7 @@ export class QueueService {
   }
 
   // Process message job
-  private static async processMessageJob(job: Job<MessageJob>): Promise<void> {
+  static async processMessageJob(job: Job<MessageJob>): Promise<void> {
     const { phoneNumber, message, orderId, rowIndex, messageType } = job.data;
     
     try {
@@ -340,7 +371,7 @@ export class QueueService {
   }
 
   // Process reminder job
-  private static async processReminderJob(job: Job<ReminderJob>): Promise<void> {
+  static async processReminderJob(job: Job<ReminderJob>): Promise<void> {
     const { orderId, rowIndex, phoneNumber, customerName, orderStatus } = job.data;
     
     try {
@@ -377,7 +408,7 @@ export class QueueService {
   }
 
   // Process rejected offer job
-  private static async processRejectedOfferJob(job: Job<ReminderJob>): Promise<void> {
+  static async processRejectedOfferJob(job: Job<ReminderJob>): Promise<void> {
     const { orderId, rowIndex, phoneNumber, customerName } = job.data;
     
     try {
