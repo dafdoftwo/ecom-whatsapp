@@ -1,76 +1,16 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { WhatsAppService } from './whatsapp';
 import { GoogleSheetsService } from './google-sheets';
+import { NetworkResilienceService } from './network-resilience';
 import { ConfigService } from './config';
 import type { SheetRow } from '../types/config';
-
-// Local queue implementation for when Redis is not available
-class LocalQueue<T> {
-  private jobs: Array<{ id: string; data: T; delay?: number; createdAt: number }> = [];
-  private idCounter = 0;
-
-  async add(name: string, data: T, options?: { delay?: number }): Promise<void> {
-    this.jobs.push({
-      id: `local-${this.idCounter++}`,
-      data,
-      delay: options?.delay || 0,
-      createdAt: Date.now()
-    });
-  }
-
-  async getWaiting(): Promise<Array<{ data: T }>> {
-    const now = Date.now();
-    return this.jobs
-      .filter(job => now >= job.createdAt + (job.delay || 0))
-      .map(job => ({ data: job.data }));
-  }
-
-  async getActive(): Promise<Array<{ data: T }>> {
-    return [];
-  }
-
-  async close(): Promise<void> {
-    this.jobs = [];
-  }
-}
-
-// Redis connection configuration
-let redisConnection: any = null;
-let useLocalQueue = false;
-
-// Check if we have a valid Redis URL
-if (process.env.REDIS_URL) {
-  try {
-    const url = new URL(process.env.REDIS_URL);
-    redisConnection = {
-      host: url.hostname,
-      port: parseInt(url.port || '6379'),
-      password: url.password || undefined,
-      username: url.username || 'default'
-    };
-    console.log('Using Redis URL from environment');
-  } catch (error) {
-    console.warn('Invalid REDIS_URL, falling back to local queue:', error);
-    useLocalQueue = true;
-  }
-} else if (process.env.NODE_ENV === 'production') {
-  console.log('No REDIS_URL in production, using local queue implementation');
-  useLocalQueue = true;
-} else {
-  // Development mode - try localhost
-  redisConnection = {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379'),
-    password: process.env.REDIS_PASSWORD,
-  };
-}
 
 export interface MessageJob {
   phoneNumber: string;
   message: string;
   orderId: string;
   rowIndex: number;
-  messageType: 'newOrder' | 'noAnswer' | 'reminder' | 'rejectedOffer' | 'shipped' | 'welcome' | 'confirmed' | 'delivered' | 'cancelled';
+  messageType: 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder';
 }
 
 export interface ReminderJob {
@@ -81,7 +21,62 @@ export interface ReminderJob {
   orderStatus: string;
 }
 
+// Local queue implementation for development/fallback
+class LocalQueue<T> {
+  private items: Array<T & { delay?: number }> = [];
+  private isProcessing = false;
+
+  async add(data: T, options?: { delay?: number }): Promise<void> {
+    this.items.push({ ...data, delay: options?.delay || 0 });
+    if (!this.isProcessing) {
+      this.processItems();
+    }
+  }
+
+  private async processItems(): Promise<void> {
+    this.isProcessing = true;
+    while (this.items.length > 0) {
+      const item = this.items.shift()!;
+      
+      if (item.delay && item.delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, item.delay));
+      }
+      
+      try {
+        // Process the item based on its type
+        if ('phoneNumber' in item && 'message' in item) {
+          await QueueService.processMessageJob({ data: item as any });
+        } else if ('orderId' in item && 'customerName' in item) {
+          await QueueService.processReminderJob({ data: item as any });
+        }
+      } catch (error) {
+        console.error('Local queue processing error:', error);
+      }
+    }
+    this.isProcessing = false;
+  }
+
+  async close(): Promise<void> {
+    this.items = [];
+    this.isProcessing = false;
+  }
+
+  size(): number {
+    return this.items.length;
+  }
+}
+
+interface QueueConfig {
+  connection?: {
+    host: string;
+    port: number;
+    password?: string;
+  };
+}
+
 export class QueueService {
+  private static isInitialized = false;
+  private static useRedis = false;
   private static messageQueue: Queue<MessageJob> | LocalQueue<MessageJob>;
   private static reminderQueue: Queue<ReminderJob> | LocalQueue<ReminderJob>;
   private static rejectedOfferQueue: Queue<ReminderJob> | LocalQueue<ReminderJob>;
@@ -92,24 +87,16 @@ export class QueueService {
 
   static async initialize() {
     try {
-      if (useLocalQueue) {
-        // Use local queue implementation
-        console.log('Initializing local queue service (no Redis)...');
-        
-        this.messageQueue = new LocalQueue<MessageJob>();
-        this.reminderQueue = new LocalQueue<ReminderJob>();
-        this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
-        
-        // Start local processing
-        this.startLocalProcessing();
-        
-        console.log('Local queue service initialized successfully');
-      } else {
+      if (process.env.REDIS_URL) {
         // Try to use Redis
         try {
           // Initialize queues
           this.messageQueue = new Queue<MessageJob>('message-queue', {
-            connection: redisConnection,
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
             defaultJobOptions: {
               removeOnComplete: 100,
               removeOnFail: 50,
@@ -122,7 +109,11 @@ export class QueueService {
           });
 
           this.reminderQueue = new Queue<ReminderJob>('reminder-queue', {
-            connection: redisConnection,
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
             defaultJobOptions: {
               removeOnComplete: 100,
               removeOnFail: 50,
@@ -130,7 +121,11 @@ export class QueueService {
           });
 
           this.rejectedOfferQueue = new Queue<ReminderJob>('rejected-offer-queue', {
-            connection: redisConnection,
+            connection: {
+              host: new URL(process.env.REDIS_URL).hostname,
+              port: parseInt(new URL(process.env.REDIS_URL).port || '6379'),
+              password: new URL(process.env.REDIS_URL).password || undefined,
+            },
             defaultJobOptions: {
               removeOnComplete: 100,
               removeOnFail: 50,
@@ -138,23 +133,34 @@ export class QueueService {
           });
 
           // Initialize workers
-          this.messageWorker = new Worker<MessageJob>(
-            'message-queue',
-            this.processMessageJob.bind(this),
-            { connection: redisConnection }
-          );
+          this.messageWorker = await this.messageQueue.add('send-message', {
+            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
+            message: 'placeholder', // Placeholder, will be replaced by actual data
+            orderId: 'placeholder', // Placeholder, will be replaced by actual data
+            rowIndex: 0, // Placeholder, will be replaced by actual data
+            messageType: 'newOrder', // Placeholder, will be replaced by actual data
+          }, {
+            delay: Math.random() * 2000 + 1000, // Add small delay to prevent rate limiting
+          });
 
-          this.reminderWorker = new Worker<ReminderJob>(
-            'reminder-queue',
-            this.processReminderJob.bind(this),
-            { connection: redisConnection }
-          );
+          this.reminderWorker = await this.reminderQueue.add('send-reminder', {
+            orderId: 'placeholder', // Placeholder, will be replaced by actual data
+            rowIndex: 0, // Placeholder, will be replaced by actual data
+            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
+            customerName: 'placeholder', // Placeholder, will be replaced by actual data
+            orderStatus: 'placeholder', // Placeholder, will be replaced by actual data
+          }, {
+            delay: 0, // No delay for immediate reminders
+          });
 
-          this.rejectedOfferWorker = new Worker<ReminderJob>(
-            'rejected-offer-queue',
-            this.processRejectedOfferJob.bind(this),
-            { connection: redisConnection }
-          );
+          this.rejectedOfferWorker = await this.rejectedOfferQueue.add('send-rejected-offer', {
+            orderId: 'placeholder', // Placeholder, will be replaced by actual data
+            rowIndex: 0, // Placeholder, will be replaced by actual data
+            phoneNumber: 'placeholder', // Placeholder, will be replaced by actual data
+            customerName: 'placeholder', // Placeholder, will be replaced by actual data
+          }, {
+            delay: 0, // No delay for immediate rejected offers
+          });
 
           // Set up error handlers
           this.setupErrorHandlers();
@@ -164,7 +170,7 @@ export class QueueService {
           console.error('Redis connection failed, falling back to local queue:', redisError);
           
           // Fall back to local queue
-          useLocalQueue = true;
+          this.useRedis = true;
           this.messageQueue = new LocalQueue<MessageJob>();
           this.reminderQueue = new LocalQueue<ReminderJob>();
           this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
@@ -174,11 +180,23 @@ export class QueueService {
           
           console.log('Fallback to local queue service completed');
         }
+      } else {
+        // Use local queue implementation
+        console.log('Initializing local queue service (no Redis)...');
+        
+        this.messageQueue = new LocalQueue<MessageJob>();
+        this.reminderQueue = new LocalQueue<ReminderJob>();
+        this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
+        
+        // Start local processing
+        this.startLocalProcessing();
+        
+        console.log('Local queue service initialized successfully');
       }
     } catch (error) {
       console.error('Error initializing queue service:', error);
       // Don't throw - use local queue as last resort
-      useLocalQueue = true;
+      this.useRedis = true;
       this.messageQueue = new LocalQueue<MessageJob>();
       this.reminderQueue = new LocalQueue<ReminderJob>();
       this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
@@ -191,30 +209,30 @@ export class QueueService {
     this.localProcessingInterval = setInterval(async () => {
       try {
         // Process message queue
-        const messageJobs = await (this.messageQueue as LocalQueue<MessageJob>).getWaiting();
+        const messageJobs = await (this.messageQueue as LocalQueue<MessageJob>).items;
         for (const job of messageJobs) {
           try {
-            await this.processMessageJob({ data: job.data } as Job<MessageJob>);
+            await this.processMessageJob({ data: job } as Job<MessageJob>);
           } catch (error) {
             console.error('Error processing local message job:', error);
           }
         }
 
         // Process reminder queue
-        const reminderJobs = await (this.reminderQueue as LocalQueue<ReminderJob>).getWaiting();
+        const reminderJobs = await (this.reminderQueue as LocalQueue<ReminderJob>).items;
         for (const job of reminderJobs) {
           try {
-            await this.processReminderJob({ data: job.data } as Job<ReminderJob>);
+            await this.processReminderJob({ data: job } as Job<ReminderJob>);
           } catch (error) {
             console.error('Error processing local reminder job:', error);
           }
         }
 
         // Process rejected offer queue
-        const rejectedJobs = await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).getWaiting();
+        const rejectedJobs = await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).items;
         for (const job of rejectedJobs) {
           try {
-            await this.processRejectedOfferJob({ data: job.data } as Job<ReminderJob>);
+            await this.processRejectedOfferJob({ data: job } as Job<ReminderJob>);
           } catch (error) {
             console.error('Error processing local rejected offer job:', error);
           }
@@ -241,13 +259,13 @@ export class QueueService {
 
   // Add immediate message to queue
   static async addMessageJob(jobData: MessageJob): Promise<void> {
-    if (useLocalQueue) {
-      await (this.messageQueue as LocalQueue<MessageJob>).add('send-message', jobData, {
+    if (this.useRedis) {
+      await (this.messageQueue as Queue<MessageJob>).add('send-message', jobData, {
         // Add small delay to prevent rate limiting
         delay: Math.random() * 2000 + 1000, // 1-3 seconds random delay
       });
     } else {
-      await this.messageQueue.add('send-message', jobData, {
+      await (this.messageQueue as LocalQueue<MessageJob>).add(jobData, {
         // Add small delay to prevent rate limiting
         delay: Math.random() * 2000 + 1000, // 1-3 seconds random delay
       });
@@ -256,12 +274,12 @@ export class QueueService {
 
   // Add delayed reminder job
   static async addReminderJob(jobData: ReminderJob, delayHours: number): Promise<void> {
-    if (useLocalQueue) {
-      await (this.reminderQueue as LocalQueue<ReminderJob>).add('send-reminder', jobData, {
+    if (this.useRedis) {
+      await (this.reminderQueue as Queue<ReminderJob>).add('send-reminder', jobData, {
         delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
       });
     } else {
-      await this.reminderQueue.add('send-reminder', jobData, {
+      await (this.reminderQueue as LocalQueue<ReminderJob>).add(jobData, {
         delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
       });
     }
@@ -269,12 +287,12 @@ export class QueueService {
 
   // Add delayed rejected offer job
   static async addRejectedOfferJob(jobData: ReminderJob, delayHours: number): Promise<void> {
-    if (useLocalQueue) {
-      await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).add('send-rejected-offer', jobData, {
+    if (this.useRedis) {
+      await (this.rejectedOfferQueue as Queue<ReminderJob>).add('send-rejected-offer', jobData, {
         delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
       });
     } else {
-      await this.rejectedOfferQueue.add('send-rejected-offer', jobData, {
+      await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).add(jobData, {
         delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
       });
     }
@@ -285,8 +303,10 @@ export class QueueService {
     const { phoneNumber, message, orderId, rowIndex, messageType } = job.data;
     
     try {
-      const whatsapp = WhatsAppService.getInstance();
-      const success = await whatsapp.sendMessage(phoneNumber, message);
+      console.log(`📱 Processing message job for order ${orderId} with network resilience...`);
+      
+      // Use NetworkResilienceService for resilient WhatsApp message sending
+      const success = await NetworkResilienceService.sendWhatsAppMessageResilient(phoneNumber, message);
       
       if (success) {
         // Update Google Sheets with the sent message status - DISABLED (READ-ONLY MODE)
@@ -296,12 +316,16 @@ export class QueueService {
         //   message.substring(0, 50) + '...'
         // );
         console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: ${messageType} sent`);
-        console.log(`Message sent successfully to ${phoneNumber} for order ${orderId}`);
+        console.log(`✅ Message sent successfully to ${phoneNumber} for order ${orderId} (resilient)`);
       } else {
         throw new Error('Failed to send WhatsApp message');
       }
     } catch (error) {
-      console.error(`Error processing message job for order ${orderId}:`, error);
+      console.error(`❌ Error processing message job for order ${orderId}:`, error);
+      
+      // Log network resilience stats for debugging
+      const stats = NetworkResilienceService.getStats();
+      console.error(`Network stats: ${stats.totalRetries} retries, circuit breaker: ${stats.circuitBreakerState}`);
       
       // Update Google Sheets with error status - DISABLED (READ-ONLY MODE)
       // await GoogleSheetsService.updateWhatsAppStatus(
@@ -403,12 +427,12 @@ export class QueueService {
 
   // Get queue statistics
   static async getQueueStats() {
-    if (useLocalQueue) {
+    if (this.useRedis) {
       const [messageWaiting, messageActive, reminderWaiting, rejectedWaiting] = await Promise.all([
-        (this.messageQueue as LocalQueue<MessageJob>).getWaiting(),
-        (this.messageQueue as LocalQueue<MessageJob>).getActive(),
-        (this.reminderQueue as LocalQueue<ReminderJob>).getWaiting(),
-        (this.rejectedOfferQueue as LocalQueue<ReminderJob>).getWaiting(),
+        (this.messageQueue as Queue<MessageJob>).getWaiting(),
+        (this.messageQueue as Queue<MessageJob>).getActive(),
+        (this.reminderQueue as Queue<ReminderJob>).getWaiting(),
+        (this.rejectedOfferQueue as Queue<ReminderJob>).getWaiting(),
       ]);
 
       return {
@@ -425,22 +449,22 @@ export class QueueService {
       };
     } else {
       const [messageWaiting, messageActive, reminderWaiting, rejectedWaiting] = await Promise.all([
-        this.messageQueue.getWaiting(),
-        this.messageQueue.getActive(),
-        this.reminderQueue.getWaiting(),
-        this.rejectedOfferQueue.getWaiting(),
+        (this.messageQueue as LocalQueue<MessageJob>).size(),
+        (this.messageQueue as LocalQueue<MessageJob>).size(), // Active jobs are not tracked in LocalQueue
+        (this.reminderQueue as LocalQueue<ReminderJob>).size(),
+        (this.rejectedOfferQueue as LocalQueue<ReminderJob>).size(),
       ]);
 
       return {
         messageQueue: {
-          waiting: messageWaiting.length,
-          active: messageActive.length,
+          waiting: messageWaiting,
+          active: messageActive,
         },
         reminderQueue: {
-          waiting: reminderWaiting.length,
+          waiting: reminderWaiting,
         },
         rejectedOfferQueue: {
-          waiting: rejectedWaiting.length,
+          waiting: rejectedWaiting,
         },
       };
     }
@@ -448,7 +472,17 @@ export class QueueService {
 
   // Clean up resources
   static async cleanup() {
-    if (useLocalQueue) {
+    if (this.useRedis) {
+      // No explicit close needed for BullMQ jobs, they are managed by the queue itself
+      // await Promise.all([
+      //   this.messageWorker?.close(),
+      //   this.reminderWorker?.close(),
+      //   this.rejectedOfferWorker?.close(),
+      //   this.messageQueue?.close(),
+      //   this.reminderQueue?.close(),
+      //   this.rejectedOfferQueue?.close(),
+      // ]);
+    } else {
       if (this.localProcessingInterval) {
         clearInterval(this.localProcessingInterval);
         this.localProcessingInterval = null;
@@ -456,15 +490,6 @@ export class QueueService {
       await (this.messageQueue as LocalQueue<MessageJob>).close();
       await (this.reminderQueue as LocalQueue<ReminderJob>).close();
       await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).close();
-    } else {
-      await Promise.all([
-        this.messageWorker?.close(),
-        this.reminderWorker?.close(),
-        this.rejectedOfferWorker?.close(),
-        this.messageQueue?.close(),
-        this.reminderQueue?.close(),
-        this.rejectedOfferQueue?.close(),
-      ]);
     }
   }
 } 

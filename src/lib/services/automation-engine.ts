@@ -3,6 +3,7 @@ import { ConfigService } from './config';
 import { QueueService, MessageJob, ReminderJob } from './queue';
 import { WhatsAppService } from './whatsapp';
 import { PhoneProcessor } from './phone-processor';
+import { NetworkResilienceService } from './network-resilience';
 import type { SheetRow, MessageTemplates } from '../types/config';
 
 export class AutomationEngine {
@@ -159,7 +160,7 @@ export class AutomationEngine {
       // STEP 3: Test Data Access
       console.log('📊 Step 3: Testing data access...');
       try {
-        const testData = await GoogleSheetsService.getSheetData();
+        const testData = await NetworkResilienceService.getSheetDataResilient();
         console.log(`✅ Data access successful - found ${testData.length} orders`);
         if (testData.length === 0) {
           console.log('⚠️ No orders found - system will wait for data');
@@ -323,7 +324,7 @@ export class AutomationEngine {
         
         // Check Google Sheets availability
         try {
-          await GoogleSheetsService.getSheetData();
+          await NetworkResilienceService.getSheetDataResilient();
         } catch (sheetsError) {
           console.error('❌ Google Sheets unavailable during processing:', sheetsError);
           throw new Error(`Google Sheets access failed: ${sheetsError instanceof Error ? sheetsError.message : 'Unknown error'}`);
@@ -417,7 +418,7 @@ export class AutomationEngine {
 
   private static async processSheetDataOptimized(): Promise<void> {
     try {
-      console.log('📊 Starting optimized sheet data processing...');
+      console.log('📊 Starting optimized sheet data processing with network resilience...');
       
       // Get configuration - FIX: Extract templates from the response
       const templatesConfig = await ConfigService.getMessageTemplates();
@@ -432,8 +433,9 @@ export class AutomationEngine {
         throw new Error('Message templates are not properly configured');
       }
       
-      // Get sheet data
-      const sheetData = await GoogleSheetsService.getSheetData();
+      // Get sheet data with network resilience
+      console.log('📊 Fetching data with network resilience...');
+      const sheetData = await NetworkResilienceService.getSheetDataResilient();
       console.log(`📋 Processing ${sheetData.length} orders from Google Sheets`);
       
       // Process in batches for better performance
@@ -489,8 +491,25 @@ export class AutomationEngine {
       console.log(`✅ Batch processing completed: ${processedCount} processed, ${skippedCount} skipped`);
       console.log(`📊 Skip reasons: ${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users`);
       
+      // Log network resilience stats
+      const resilienceStats = NetworkResilienceService.getStats();
+      if (resilienceStats.totalRetries > 0) {
+        console.log(`🔄 Network resilience stats: ${resilienceStats.totalRetries} retries, ${resilienceStats.successfulRetries} successful, circuit breaker: ${resilienceStats.circuitBreakerState}`);
+      }
+      
     } catch (error) {
       console.error('❌ Error in optimized sheet data processing:', error);
+      
+      // Log the error type for better debugging
+      if (error instanceof Error) {
+        console.error('Error details:', {
+          message: error.message,
+          name: error.name,
+          code: (error as any).code,
+          syscall: (error as any).syscall
+        });
+      }
+      
       throw error;
     }
   }
