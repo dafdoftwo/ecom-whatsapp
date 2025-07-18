@@ -442,7 +442,7 @@ export class AutomationEngine {
       let skippedCount = 0;
       let invalidPhoneCount = 0;
       let whatsappValidationCount = 0;
-      
+
       for (let i = 0; i < sheetData.length; i += batchSize) {
         const batch = sheetData.slice(i, i + batchSize);
         
@@ -485,7 +485,7 @@ export class AutomationEngine {
           }
         }
       }
-      
+
       console.log(`✅ Batch processing completed: ${processedCount} processed, ${skippedCount} skipped`);
       console.log(`📊 Skip reasons: ${invalidPhoneCount} invalid phones, ${whatsappValidationCount} not WhatsApp users`);
       
@@ -605,7 +605,7 @@ export class AutomationEngine {
     rejectedOfferDelayHours: number
   ): Promise<void> {
     const { orderId, processedPhone, orderStatus, rowIndex, name } = row;
-
+    
     if (!processedPhone || !orderId || !rowIndex) {
       console.warn(`⚠️ Missing required data for order ${orderId}: phone=${processedPhone}, rowIndex=${rowIndex}`);
       return;
@@ -749,7 +749,7 @@ export class AutomationEngine {
       const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
       
       console.log(reason);
-      
+
       return {
         shouldSend: false,
         reason,
@@ -760,7 +760,7 @@ export class AutomationEngine {
         }
       };
     }
-
+    
     return {
       shouldSend: true,
       reason: `✅ رسالة ${messageType} جديدة للعميل ${customerName} (طلب ${orderId})`,
@@ -782,7 +782,7 @@ export class AutomationEngine {
   ): void {
     const messageKey = messageType === 'reminder' ? `reminder_${orderId}` : `${orderId}_${messageType}`;
     const timestamp = Date.now();
-
+    
     if (messageType === 'reminder') {
       this.orderStatusHistory.set(messageKey, {
         status: 'reminder_sent',

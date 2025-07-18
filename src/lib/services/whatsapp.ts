@@ -243,7 +243,7 @@ export class WhatsAppService {
     health: any;
   } {
     const persistentStatus = this.persistentConnection.getStatus();
-    
+
     return {
       isConnected: persistentStatus.isConnected,
       qrCode: persistentStatus.qrCode,
@@ -308,17 +308,17 @@ export class WhatsAppService {
       if (fs.existsSync(sessionPath)) {
         const stats = fs.statSync(sessionPath);
         sessionInfo.lastModified = stats.mtime;
-        
-        // Get session size
-        try {
-          const { exec } = await import('child_process');
-          const { promisify } = await import('util');
-          const execAsync = promisify(exec);
+
+      // Get session size
+      try {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
           
-          const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
+        const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
           sessionInfo.size = parseInt(stdout.split('\t')[0]);
-        } catch (error) {
-          console.warn('Could not get session size:', error);
+      } catch (error) {
+        console.warn('Could not get session size:', error);
         }
       }
     } catch (error) {
