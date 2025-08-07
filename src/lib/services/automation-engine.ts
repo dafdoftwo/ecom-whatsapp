@@ -4,7 +4,11 @@ import { QueueService, MessageJob, ReminderJob } from './queue';
 import { WhatsAppService } from './whatsapp';
 import { PhoneProcessor } from './phone-processor';
 import { NetworkResilienceService } from './network-resilience';
+import { setupGlobalErrorHandlers } from '../utils/error-handler';
 import type { SheetRow, MessageTemplates } from '../types/config';
+
+// Setup global error handlers
+setupGlobalErrorHandlers();
 
 export class AutomationEngine {
   private static isRunning = false;

@@ -1,8 +1,12 @@
 import { Client, LocalAuth, ClientInfo } from 'whatsapp-web.js';
 import { ensureFetchPolyfill } from '../utils/fetch-polyfill';
+import { setupGlobalErrorHandlers } from '../utils/error-handler';
 import fs from 'fs';
 import path from 'path';
 import * as QRCode from 'qrcode';
+
+// Setup global error handlers
+setupGlobalErrorHandlers();
 
 // Helper function to convert QR code to data URL
 const qrCodeToDataURL = async (qrCode: string): Promise<string> => {
