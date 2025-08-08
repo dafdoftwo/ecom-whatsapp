@@ -2,6 +2,17 @@ import { GoogleSheetsService } from './google-sheets';
 import { WhatsAppService } from './whatsapp';
 import { ConfigService } from './config';
 
+// Ensure fetch is available in production environments
+if (typeof fetch === 'undefined') {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodeFetch = require('node-fetch');
+    (global as any).fetch = nodeFetch;
+  } catch (e) {
+    console.warn('⚠️ fetch is not available and node-fetch could not be loaded');
+  }
+}
+
 // Network error types that require special handling
 export interface NetworkError extends Error {
   code?: string;

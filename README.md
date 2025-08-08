@@ -353,3 +353,21 @@ sudo systemctl restart redis-server
 ---
 
 **🇪🇬 صُمم خصيصاً للسوق المصري بحب من المطورين المصريين**
+
+## Deployment on Railway
+
+1. Connect repo to Railway
+2. Ensure Build uses Dockerfile (already configured in `railway.json`)
+3. Set environment variables:
+   - `NODE_ENV=production`
+   - `PORT` (Railway provides automatically)
+   - `WHATSAPP_SESSION_PATH=/app/whatsapp-session`
+   - `CONFIG_DIR=/app/config`
+   - `REDIS_URL` (provision Redis plugin and copy the URL)
+4. Add Google config files in `config/` (committed) or set via API before start
+5. Deploy. Healthcheck: `/api/health`
+
+### First run on Railway
+- Open the app URL and go to WhatsApp page to scan QR
+- Start automation via `POST /api/automation/reliable-start`
+- Monitor via `GET /api/automation/status`

@@ -50,6 +50,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV CHROME_BIN=/usr/bin/chromium-browser
 ENV CHROME_PATH=/usr/bin/chromium-browser
+# Default session path (can be overridden by Railway variable)
+ENV WHATSAPP_SESSION_PATH=/app/whatsapp-session
 
 # Create nextjs user
 RUN addgroup -g 1001 -S nodejs
@@ -70,8 +72,9 @@ COPY --chown=nextjs:nodejs next.config.js ./
 # Copy config directory
 COPY --chown=nextjs:nodejs config ./config
 
-# Create necessary directories
-RUN mkdir -p ./public ./whatsapp-session-pro
+# Create necessary directories (ensure session dir exists)
+RUN mkdir -p ./public \
+    && mkdir -p ${WHATSAPP_SESSION_PATH}
 
 # Ensure nextjs user owns everything
 RUN chown -R nextjs:nodejs /app

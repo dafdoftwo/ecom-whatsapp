@@ -36,7 +36,7 @@ const qrCodeToDataURL = async (qrCode: string): Promise<string> => {
 // Enhanced configuration for persistent connection
 const PERSISTENT_CONFIG = {
   CLIENT_ID: 'whatsapp-automation-persistent',
-  SESSION_PATH: './whatsapp-session-persistent',
+  SESSION_PATH: process.env.WHATSAPP_SESSION_PATH || './whatsapp-session-persistent',
   MAX_RECONNECT_ATTEMPTS: 5,
   RECONNECT_DELAY_BASE: 3000, // 3 seconds
   RECONNECT_DELAY_MAX: 30000, // 30 seconds max
@@ -46,7 +46,7 @@ const PERSISTENT_CONFIG = {
   MAX_INITIALIZATION_TIME: 60000, // 1 minute
   BROWSER_RESTART_THRESHOLD: 3, // Restart browser after 3 failures
   SESSION_CLEANUP_INTERVAL: 300000, // 5 minutes
-};
+} as const;
 
 interface ConnectionHealth {
   isConnected: boolean;
