@@ -69,12 +69,28 @@ export class QueueService {
   private static rejectedOfferWorker: Worker<ReminderJob> | null;
   private static localProcessingInterval: NodeJS.Timeout | null = null;
 
+  private static async ensureInitialized(): Promise<void> {
+    if (!this.isInitialized) {
+      try {
+        await this.initialize();
+      } catch (e) {
+        console.warn('⚠️ Queue initialization failed, forcing local fallback:', e);
+        // Force local fallback
+        this.useRedis = false;
+        this.messageQueue = new LocalQueue<MessageJob>();
+        this.reminderQueue = new LocalQueue<ReminderJob>();
+        this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
+        this.startLocalProcessing();
+        this.isInitialized = true;
+      }
+    }
+  }
+
   static async initialize() {
     try {
       if (process.env.REDIS_URL) {
-        // Try to use Redis
         try {
-          // Initialize queues
+          // Initialize queues with Redis
           this.messageQueue = new Queue<MessageJob>('message-queue', {
             connection: {
               host: new URL(process.env.REDIS_URL).hostname,
@@ -155,40 +171,27 @@ export class QueueService {
 
           console.log('Redis queue service initialized successfully');
         } catch (redisError) {
-          console.error('Redis connection failed, falling back to local queue:', redisError);
-          
-          // Fall back to local queue
-          this.useRedis = true;
-          this.messageQueue = new LocalQueue<MessageJob>();
-          this.reminderQueue = new LocalQueue<ReminderJob>();
-          this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
-          
-          // Start local processing
-          this.startLocalProcessing();
-          
-          console.log('Fallback to local queue service completed');
+          console.warn('⚠️ Redis unavailable, switching to local fallback:', redisError);
+          this.useRedis = false;
         }
-      } else {
-        // Use local queue implementation
-        console.log('Initializing local queue service (no Redis)...');
-        
+      }
+
+      if (!this.useRedis) {
+        // Local fallback queues
         this.messageQueue = new LocalQueue<MessageJob>();
         this.reminderQueue = new LocalQueue<ReminderJob>();
         this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
-        
-        // Start local processing
+        this.messageWorker = null;
+        this.reminderWorker = null;
+        this.rejectedOfferWorker = null;
         this.startLocalProcessing();
-        
-        console.log('Local queue service initialized successfully');
       }
+
+      this.setupErrorHandlers();
+      this.isInitialized = true;
     } catch (error) {
       console.error('Error initializing queue service:', error);
-      // Don't throw - use local queue as last resort
-      this.useRedis = true;
-      this.messageQueue = new LocalQueue<MessageJob>();
-      this.reminderQueue = new LocalQueue<ReminderJob>();
-      this.rejectedOfferQueue = new LocalQueue<ReminderJob>();
-      this.startLocalProcessing();
+      throw error;
     }
   }
 
@@ -290,41 +293,42 @@ export class QueueService {
 
   // Add immediate message to queue
   static async addMessageJob(jobData: MessageJob): Promise<void> {
+    await this.ensureInitialized();
     if (this.useRedis) {
       await (this.messageQueue as Queue<MessageJob>).add('send-message', jobData, {
-        // Add small delay to prevent rate limiting
-        delay: Math.random() * 2000 + 1000, // 1-3 seconds random delay
+        delay: Math.random() * 2000 + 1000,
       });
     } else {
       await (this.messageQueue as LocalQueue<MessageJob>).add(jobData, {
-        // Add small delay to prevent rate limiting
-        delay: Math.random() * 2000 + 1000, // 1-3 seconds random delay
+        delay: Math.random() * 2000 + 1000,
       });
     }
   }
 
   // Add delayed reminder job
   static async addReminderJob(jobData: ReminderJob, delayHours: number): Promise<void> {
+    await this.ensureInitialized();
     if (this.useRedis) {
       await (this.reminderQueue as Queue<ReminderJob>).add('send-reminder', jobData, {
-        delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
+        delay: delayHours * 60 * 60 * 1000,
       });
     } else {
       await (this.reminderQueue as LocalQueue<ReminderJob>).add(jobData, {
-        delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
+        delay: delayHours * 60 * 60 * 1000,
       });
     }
   }
 
   // Add delayed rejected offer job
   static async addRejectedOfferJob(jobData: ReminderJob, delayHours: number): Promise<void> {
+    await this.ensureInitialized();
     if (this.useRedis) {
       await (this.rejectedOfferQueue as Queue<ReminderJob>).add('send-rejected-offer', jobData, {
-        delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
+        delay: delayHours * 60 * 60 * 1000,
       });
     } else {
       await (this.rejectedOfferQueue as LocalQueue<ReminderJob>).add(jobData, {
-        delay: delayHours * 60 * 60 * 1000, // Convert hours to milliseconds
+        delay: delayHours * 60 * 60 * 1000,
       });
     }
   }

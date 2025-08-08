@@ -43,7 +43,7 @@ const PERSISTENT_CONFIG = {
   HEALTH_CHECK_INTERVAL: 15000, // 15 seconds
   SESSION_VALIDATION_INTERVAL: 60000, // 1 minute
   HEARTBEAT_INTERVAL: 10000, // 10 seconds
-  MAX_INITIALIZATION_TIME: 60000, // 1 minute
+  MAX_INITIALIZATION_TIME: 180000, // 3 minutes for Railway
   BROWSER_RESTART_THRESHOLD: 3, // Restart browser after 3 failures
   SESSION_CLEANUP_INTERVAL: 300000, // 5 minutes
 } as const;
