@@ -167,6 +167,13 @@ export class WhatsAppPersistentConnection {
     
     const sessionPath = path.resolve(PERSISTENT_CONFIG.SESSION_PATH);
     
+    // In validateAndPrepareSession, if session exists, set sessionHealth=healthy and skip QR
+    if (fs.existsSync(sessionPath)) {
+      this.connectionHealth.sessionHealth = 'healthy';
+      console.log('📁 Existing session detected, will attempt restore without QR');
+      return;
+    }
+    
     // Check if session exists
     if (!fs.existsSync(sessionPath)) {
       console.log('📁 No existing session found, will create new one');
@@ -428,6 +435,12 @@ export class WhatsAppPersistentConnection {
     
     // QR Code generation
     this.client.on('qr', async (qr) => {
+      // Only provide QR if there's no existing session
+      const sessionPath = path.resolve(PERSISTENT_CONFIG.SESSION_PATH);
+      if (fs.existsSync(sessionPath)) {
+        console.log('🔒 Session exists, suppressing QR display');
+        return;
+      }
       console.log('📱 QR Code generated for authentication');
       console.log('🔍 QR Code raw data length:', qr.length);
       

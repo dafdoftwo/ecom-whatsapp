@@ -5,6 +5,7 @@ import { WhatsAppService } from './whatsapp';
 import { PhoneProcessor } from './phone-processor';
 import { NetworkResilienceService } from './network-resilience';
 import { setupGlobalErrorHandlers } from '../utils/error-handler';
+import { DuplicateGuardService } from './duplicate-guard';
 import type { SheetRow, MessageTemplates } from '../types/config';
 
 // Setup global error handlers
@@ -729,304 +730,113 @@ export class AutomationEngine {
   private static checkAndPreventDuplicate(
     orderId: string, 
     messageType: 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder',
-    customerName: string
-  ): { shouldSend: boolean; reason: string; stats: any } {
-    const messageKey = messageType === 'reminder' ? `reminder_${orderId}` : `${orderId}_${messageType}`;
-
-    // Check if message was already sent
-    const alreadySent = messageType === 'reminder' 
-      ? this.orderStatusHistory.has(messageKey)
-      : this.sentMessages.has(messageKey);
-
-    if (alreadySent) {
-      // Update duplicate attempt tracking
-      const duplicateKey = `${orderId}_${messageType}`;
-      const existingAttempt = this.duplicateAttempts.get(duplicateKey);
-      
-      if (existingAttempt) {
-        existingAttempt.attemptCount++;
-        existingAttempt.preventedDuplicates++;
-        existingAttempt.lastAttempt = Date.now();
-      } else {
-        this.duplicateAttempts.set(duplicateKey, {
-          orderId,
-          messageType,
-          attemptCount: 2, // Original + this attempt
-          lastAttempt: Date.now(),
-          preventedDuplicates: 1
-        });
-      }
-
-      // Update global statistics
-      this.duplicatePreventionStats.totalDuplicatesPrevented++;
-      this.duplicatePreventionStats.duplicatesPreventedByType[messageType]++;
-
-      const previousMessage = messageType === 'reminder'
-        ? this.orderStatusHistory.get(messageKey)
-        : this.sentMessages.get(messageKey);
-      
-      const timeDiff = previousMessage 
-        ? Math.round((Date.now() - previousMessage.timestamp) / 1000 / 60) // minutes
-        : 0;
-
-      const reason = `🚫 منع تكرار: رسالة ${messageType} تم إرسالها منذ ${timeDiff} دقيقة للعميل ${customerName} (طلب ${orderId})`;
-      
-      console.log(reason);
-
-      return {
-        shouldSend: false,
-        reason,
-        stats: {
-          totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
-          duplicatesPreventedByType: this.duplicatePreventionStats.duplicatesPreventedByType[messageType],
-          attemptCount: existingAttempt ? existingAttempt.attemptCount : 2
-        }
-      };
-    }
-    
+    customerName: string,
+    phone?: string | null
+  ): { shouldSend: boolean; reason: string; stats: any; promise: Promise<boolean> } {
+    const checkPromise = DuplicateGuardService.shouldSend(orderId, messageType as any, phone, customerName);
     return {
       shouldSend: true,
-      reason: `✅ رسالة ${messageType} جديدة للعميل ${customerName} (طلب ${orderId})`,
-      stats: {
-        totalDuplicatesPrevented: this.duplicatePreventionStats.totalDuplicatesPrevented,
-        duplicatesPreventedByType: this.duplicatePreventionStats.duplicatesPreventedByType[messageType],
-        attemptCount: 1
-      }
+      reason: 'pending persistent check',
+      stats: {},
+      promise: checkPromise,
     };
   }
 
   /**
    * Mark message as sent with enhanced tracking
    */
-  private static markMessageAsSent(
+  private static async markMessageAsSent(
     orderId: string, 
     messageType: 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder',
-    customerName: string
-  ): void {
-    const messageKey = messageType === 'reminder' ? `reminder_${orderId}` : `${orderId}_${messageType}`;
-    const timestamp = Date.now();
-    
-    if (messageType === 'reminder') {
-      this.orderStatusHistory.set(messageKey, {
-        status: 'reminder_sent',
-        timestamp
-      });
-    } else {
-      this.sentMessages.set(messageKey, {
-        messageType,
-        timestamp
-      });
-    }
-
-    console.log(`✅ تم تسجيل إرسال رسالة ${messageType} للعميل ${customerName} (طلب ${orderId})`);
+    customerName: string,
+    phone?: string | null
+  ): Promise<void> {
+    await DuplicateGuardService.markSent(orderId, messageType as any, phone, customerName);
+    console.log(`✅ تم تسجيل إرسال رسالة ${messageType} للعميل ${customerName} (طلب ${orderId}) بشكل دائم`);
   }
 
   private static async handleNewOrder(row: SheetRow, templates: MessageTemplates, reminderDelayHours: number, statusType: string): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
-    
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Enhanced duplicate prevention check
-    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'newOrder', name);
-    
-    if (!duplicateCheck.shouldSend) {
-      console.log(duplicateCheck.reason);
-          return;
+    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'newOrder', name, processedPhone);
+    const allowed = await duplicateCheck.promise;
+    if (!allowed) {
+      console.log(`🚫 Duplicate prevented (persistent): newOrder for ${orderId}`);
+      return;
     }
 
-    console.log(`📋 Sending newOrder message to ${name} (${processedPhone}) for order ${orderId}`);
-    console.log(`📝 Status Type: ${statusType}`);
-
-    // Prepare and send new order message
     const newOrderMessage = this.replaceMessageVariables(templates.newOrder, row);
-
-    const messageJob: MessageJob = {
-      phoneNumber: processedPhone,
-      message: newOrderMessage,
-      orderId,
-      rowIndex,
-      messageType: 'newOrder' as any,
-    };
-
+    const messageJob: MessageJob = { phoneNumber: processedPhone, message: newOrderMessage, orderId, rowIndex, messageType: 'newOrder' as any };
     await QueueService.addMessageJob(messageJob);
+    await this.markMessageAsSent(orderId, 'newOrder', name, processedPhone);
 
-    // Mark message as sent using new system
-    this.markMessageAsSent(orderId, 'newOrder', name);
-
-    console.log(`✅ تم جدولة رسالة الطلب الجديد للعميل: ${name}`);
-
-    // Schedule reminder for later (24 hours default) - but only if reminders are enabled
     const statusSettings = await ConfigService.getStatusSettings();
     if (statusSettings?.enabledStatuses?.reminder) {
-    const reminderJob: ReminderJob = {
-      orderId,
-      rowIndex,
-      phoneNumber: processedPhone,
-      customerName: name,
-      orderStatus: statusType,
-    };
-
-    await QueueService.addReminderJob(reminderJob, reminderDelayHours);
-    console.log(`🎯 Successfully processed newOrder for ${orderId} - Message queued + Reminder scheduled for ${reminderDelayHours}h`);
-    } else {
-      console.log(`🎯 Successfully processed newOrder for ${orderId} - Message queued (Reminders disabled)`);
+      const reminderJob: ReminderJob = { orderId, rowIndex, phoneNumber: processedPhone, customerName: name, orderStatus: statusType };
+      await QueueService.addReminderJob(reminderJob, reminderDelayHours);
     }
   }
 
   private static async handleNoAnswer(row: SheetRow, templates: MessageTemplates, reminderDelayHours: number): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
-    
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Enhanced duplicate prevention check
-    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'noAnswer', name);
-    
-    if (!duplicateCheck.shouldSend) {
-      console.log(duplicateCheck.reason);
-      return;
-    }
+    const allowed = await DuplicateGuardService.shouldSend(orderId, 'noAnswer', processedPhone, name);
+    if (!allowed) { console.log(`🚫 Duplicate prevented (persistent): noAnswer for ${orderId}`); return; }
 
-    console.log(`📞 Sending noAnswer message to ${name} (${processedPhone}) for order ${orderId}`);
-
-    // Send no answer follow-up message
-    const noAnswerMessage = this.replaceMessageVariables(templates.noAnswer, row);
-
-    const messageJob: MessageJob = {
-      phoneNumber: processedPhone,
-      message: noAnswerMessage,
-      orderId,
-      rowIndex,
-      messageType: 'noAnswer',
-    };
-
+    const msg = this.replaceMessageVariables(templates.noAnswer, row);
+    const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'noAnswer' } as any;
     await QueueService.addMessageJob(messageJob);
-
-    // Mark message as sent using new system
-    this.markMessageAsSent(orderId, 'noAnswer', name);
-
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم إرسال متابعة`);
-    console.log(`🎯 Successfully processed noAnswer for ${orderId} - Follow-up message queued`);
+    await this.markMessageAsSent(orderId, 'noAnswer', name, processedPhone);
   }
 
   private static async handleShipped(row: SheetRow, templates: MessageTemplates): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
-    
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Enhanced duplicate prevention check
-    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'shipped', name);
-    
-    if (!duplicateCheck.shouldSend) {
-      console.log(duplicateCheck.reason);
-      return;
-    }
+    const allowed = await DuplicateGuardService.shouldSend(orderId, 'shipped', processedPhone, name);
+    if (!allowed) { console.log(`🚫 Duplicate prevented (persistent): shipped for ${orderId}`); return; }
 
-    console.log(`📦 Sending shipped message to ${name} (${processedPhone}) for order ${orderId}`);
-
-    // Send shipped confirmation message
-    const shippedMessage = this.replaceMessageVariables(templates.shipped, row);
-
-    const messageJob: MessageJob = {
-      phoneNumber: processedPhone,
-      message: shippedMessage,
-      orderId,
-      rowIndex,
-      messageType: 'shipped',
-    };
-
+    const msg = this.replaceMessageVariables(templates.shipped, row);
+    const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'shipped' } as any;
     await QueueService.addMessageJob(messageJob);
-
-    // Mark message as sent using new system
-    this.markMessageAsSent(orderId, 'shipped', name);
-
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم إرسال تأكيد الشحن`);
-    console.log(`🎯 Successfully processed shipped for ${orderId} - Confirmation message queued`);
+    await this.markMessageAsSent(orderId, 'shipped', name, processedPhone);
   }
 
   private static async handleRefusedDelivery(row: SheetRow, templates: MessageTemplates, rejectedOfferDelayHours: number): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
-    
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Enhanced duplicate prevention check
-    const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'rejectedOffer', name);
-    
-    if (!duplicateCheck.shouldSend) {
-      console.log(duplicateCheck.reason);
-      return;
-    }
+    const allowed = await DuplicateGuardService.shouldSend(orderId, 'rejectedOffer', processedPhone, name);
+    if (!allowed) { console.log(`🚫 Duplicate prevented (persistent): rejectedOffer for ${orderId}`); return; }
 
-    console.log(`🚫 Scheduling rejectedOffer message to ${name} (${processedPhone}) for order ${orderId} (delay: ${rejectedOfferDelayHours}h)`);
-
-    // Schedule rejected offer message with delay
-    const rejectedOfferMessage = this.replaceMessageVariables(templates.rejectedOffer, row);
-
-    const messageJob: MessageJob = {
-      phoneNumber: processedPhone,
-      message: rejectedOfferMessage,
-      orderId,
-      rowIndex,
-      messageType: 'rejectedOffer',
-    };
-
-    // Add to queue with delay (convert hours to milliseconds)
+    const msg = this.replaceMessageVariables(templates.rejectedOffer, row);
+    const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'rejectedOffer' } as any;
     await QueueService.addMessageJob(messageJob);
-
-    // Mark message as sent using new system
-    this.markMessageAsSent(orderId, 'rejectedOffer', name);
-
-    console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم جدولة عرض جديد`);
-    console.log(`🎯 Successfully processed rejectedOffer for ${orderId} - Message scheduled for ${rejectedOfferDelayHours}h delay`);
+    await this.markMessageAsSent(orderId, 'rejectedOffer', name, processedPhone);
   }
 
   private static async checkReminderConditions(
-    row: SheetRow, 
-    previousStatusData: { status: string, timestamp: number }, 
-    templates: MessageTemplates, 
+    row: SheetRow,
+    previousStatusData: { status: string, timestamp: number },
+    templates: MessageTemplates,
     reminderDelayHours: number
   ): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
-    
     if (!processedPhone || !orderId || !rowIndex) return;
 
-    // Check if enough time has passed for a reminder
     const timeSinceLastStatus = Date.now() - previousStatusData.timestamp;
-    const reminderThreshold = reminderDelayHours * 60 * 60 * 1000; // Convert hours to milliseconds
+    const reminderThreshold = reminderDelayHours * 60 * 60 * 1000;
 
-    if (timeSinceLastStatus >= reminderThreshold) {
-      // Check if we should send a reminder based on the current status
-      const shouldSendReminder = this.shouldSendReminderForStatus(row.orderStatus);
-      
-      if (shouldSendReminder) {
-        // Enhanced duplicate prevention check
-        const duplicateCheck = this.checkAndPreventDuplicate(orderId, 'reminder', name);
-        
-        if (!duplicateCheck.shouldSend) {
-          console.log(duplicateCheck.reason);
-          return;
-        }
+    if (timeSinceLastStatus >= reminderThreshold && this.shouldSendReminderForStatus(row.orderStatus)) {
+      const allowed = await DuplicateGuardService.shouldSend(orderId, 'reminder', processedPhone, name);
+      if (!allowed) { console.log(`🚫 Duplicate prevented (persistent): reminder for ${orderId}`); return; }
 
-        console.log(`🔔 Sending reminder message to ${name} (${processedPhone}) for order ${orderId}`);
-
-        // Send reminder message
-        const reminderMessage = this.replaceMessageVariables(templates.reminder || templates.newOrder, row);
-
-        const messageJob: MessageJob = {
-          phoneNumber: processedPhone,
-          message: reminderMessage,
-          orderId,
-          rowIndex,
-          messageType: 'reminder',
-        };
-
-        await QueueService.addMessageJob(messageJob);
-
-        // Mark message as sent using new system
-        this.markMessageAsSent(orderId, 'reminder', name);
-
-        console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: تم إرسال تذكير`);
-        console.log(`🎯 Successfully processed reminder for ${orderId} - Reminder message queued`);
-      }
+      const msg = this.replaceMessageVariables(templates.reminder || templates.newOrder, row);
+      const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'reminder' } as any;
+      await QueueService.addMessageJob(messageJob);
+      await this.markMessageAsSent(orderId, 'reminder', name, processedPhone);
     }
   }
 
