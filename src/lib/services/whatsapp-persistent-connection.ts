@@ -305,15 +305,13 @@ export class WhatsAppPersistentConnection {
    */
   private setupClientEventHandlers(): void {
     if (!this.client) return;
-    
+
     this.client.on('qr', async (qr) => {
-      const sessionPath = path.resolve(PERSISTENT_CONFIG.SESSION_PATH);
-      const sessionExists = fs.existsSync(sessionPath);
-      const shouldSuppress = sessionExists && this.connectionHealth.sessionHealth === 'healthy';
-      if (shouldSuppress) {
-        console.log('🔒 Session exists and healthy, suppressing QR display');
-        return;
-      }
+      // إذا وصل حدث QR فهذا يعني أن الجلسة غير مصادَقة حالياً، لذا يجب عرض الكود دائماً
+      this.connectionHealth.sessionHealth = 'degraded';
+      this.connectionHealth.isConnected = false;
+      this.qrCode = null;
+
       console.log('📱 QR Code generated for authentication');
       console.log('🔍 QR Code raw data length:', qr.length);
       try {
