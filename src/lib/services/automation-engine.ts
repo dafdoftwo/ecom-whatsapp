@@ -307,7 +307,7 @@ export class AutomationEngine {
 
   private static async startProcessingLoop(): Promise<void> {
     const timingConfig = await ConfigService.getTimingConfig();
-    const checkInterval = (timingConfig.checkIntervalSeconds || 30) * 1000;
+    const checkInterval = (timingConfig.checkIntervalSeconds || 15) * 1000;
     
     console.log(`⏰ Processing loop configured with ${checkInterval / 1000} second intervals`);
     
@@ -410,7 +410,7 @@ export class AutomationEngine {
     };
 
     // Start the first processing cycle with a small delay
-    console.log('🚀 Starting first processing cycle in 5 seconds...');
+    console.log('🚀 Starting first processing cycle in 2 seconds...');
     this.intervalId = setTimeout(() => {
       processLoop().catch(error => {
         console.error('❌ Critical error in initial processing loop:', error);
@@ -418,7 +418,7 @@ export class AutomationEngine {
         this.isRunning = false;
         throw error;
       });
-    }, 5000); // 5 second delay for initial startup
+    }, 2000); // 2 second delay for initial startup
   }
 
   private static async processSheetDataOptimized(): Promise<void> {
@@ -470,18 +470,20 @@ export class AutomationEngine {
           // Stage 2: Business Logic Application
           const orderId = row.orderId!;
           const currentStatus = row.orderStatus;
-          const previousStatusData = this.orderStatusHistory.get(orderId);
+          // Use a stable key per spreadsheet row to detect first‑seen and status changes even if orderId formatting changes
+          const stableKey = orderId || `row_${row.rowIndex}_${(row.name || '').substring(0,3)}`;
+          const previousStatusData = this.orderStatusHistory.get(stableKey);
           
           // Update status history
-          this.orderStatusHistory.set(orderId, {
+          this.orderStatusHistory.set(stableKey, {
             status: currentStatus,
             timestamp: Date.now()
           });
-
+           
           // Check if this is a new order or status change
           const isNewOrder = !previousStatusData;
           const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
-
+ 
           if (isNewOrder || statusChanged) {
             console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
             await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
