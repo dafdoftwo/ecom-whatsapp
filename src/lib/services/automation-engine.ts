@@ -441,6 +441,9 @@ export class AutomationEngine {
     try {
       console.log('📊 Starting optimized sheet data processing with network resilience...');
       
+      // Check for status history reset flag
+      await this.checkAndHandleStatusHistoryReset();
+      
       // Get configuration - FIX: Extract templates from the response
       const templatesConfig = await ConfigService.getMessageTemplates();
       const templates = templatesConfig.templates; // Extract the actual templates
@@ -1387,5 +1390,39 @@ export class AutomationEngine {
   // Public method for testing message variable replacement
   static testMessageReplacement(template: string, row: any): string {
     return this.replaceMessageVariables(template, row);
+  }
+
+  /**
+   * Check for status history reset flag and handle it
+   */
+  private static async checkAndHandleStatusHistoryReset(): Promise<void> {
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      
+      const configDir = path.join(process.cwd(), 'config');
+      const resetFlagFile = path.join(configDir, 'status-history-reset.json');
+      
+      if (fs.existsSync(resetFlagFile)) {
+        console.log('🔄 Status history reset flag detected - resetting all status history...');
+        
+        // Clear the status history map
+        this.orderStatusHistory.clear();
+        console.log('✅ Status history cleared - all leads will be treated as new');
+        
+        // Remove the flag file
+        fs.unlinkSync(resetFlagFile);
+        console.log('✅ Reset flag file removed');
+        
+        // Also clear any other tracking data to ensure fresh start
+        this.processedOrders.clear();
+        this.updatedFromEmptyStatus.clear();
+        
+        console.log('🚀 Fresh start initiated - all current leads will trigger message sending');
+      }
+    } catch (error) {
+      // If there's an error checking the flag, just continue normally
+      console.log('⚠️ Could not check status history reset flag:', error);
+    }
   }
 } 
