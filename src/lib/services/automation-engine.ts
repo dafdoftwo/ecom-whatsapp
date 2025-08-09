@@ -507,6 +507,8 @@ export class AutomationEngine {
           } else if (previousStatusData) {
             // Check for reminder conditions
             await this.checkReminderConditions(row, previousStatusData, templates, reminderDelayHours);
+            // Complementary send: if message for current status hasn't been sent before, send it once
+            await this.ensureMessageForCurrentStatusIfMissing(row, templates, reminderDelayHours, rejectedOfferDelayHours);
           }
         }
       }
@@ -855,6 +857,69 @@ export class AutomationEngine {
       const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'reminder' } as any;
       await QueueService.addMessageJob(messageJob);
       await this.markMessageAsSent(orderId, 'reminder', name, processedPhone);
+    }
+  }
+
+  private static async ensureMessageForCurrentStatusIfMissing(
+    row: SheetRow,
+    templates: MessageTemplates,
+    reminderDelayHours: number,
+    rejectedOfferDelayHours: number
+  ): Promise<void> {
+    const status = (row.orderStatus || '').trim();
+    const type = this.mapStatusToType(status);
+    if (!type) return;
+    const canSend = await (await import('./duplicate-guard')).DuplicateGuardService.shouldSend(
+      row.orderId!, type as any, row.processedPhone || undefined, row.name || undefined
+    );
+    if (!canSend) return;
+    switch (type) {
+      case 'newOrder':
+        await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد');
+        break;
+      case 'noAnswer':
+        await this.handleNoAnswer(row, templates, reminderDelayHours);
+        break;
+      case 'shipped':
+        await this.handleShipped(row, templates);
+        break;
+      case 'rejectedOffer':
+        await this.handleRefusedDelivery(row, templates, rejectedOfferDelayHours);
+        break;
+      case 'reminder':
+        // reminders تُدار زمنياً، نتجنب إرسال فوري هنا
+        break;
+    }
+  }
+
+  private static mapStatusToType(status: string): 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder' | null {
+    switch (status) {
+      case this.EGYPTIAN_ORDER_STATUSES.NEW:
+      case this.EGYPTIAN_ORDER_STATUSES.NEW_2:
+      case this.EGYPTIAN_ORDER_STATUSES.NEW_3:
+      case this.EGYPTIAN_ORDER_STATUSES.NEW_4:
+      case this.EGYPTIAN_ORDER_STATUSES.UNDEFINED:
+      case this.EGYPTIAN_ORDER_STATUSES.EMPTY:
+        return 'newOrder';
+      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_1:
+      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_2:
+      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_3:
+      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_4:
+        return 'noAnswer';
+      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED:
+      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_2:
+      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_3:
+      case this.EGYPTIAN_ORDER_STATUSES.SHIPPED:
+      case this.EGYPTIAN_ORDER_STATUSES.SHIPPED_2:
+        return 'shipped';
+      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_1:
+      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_2:
+      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_3:
+      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_4:
+      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_5:
+        return 'rejectedOffer';
+      default:
+        return null;
     }
   }
 
