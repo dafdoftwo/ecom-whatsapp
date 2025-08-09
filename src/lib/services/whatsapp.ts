@@ -5,16 +5,8 @@ import { WhatsAppPersistentConnection } from './whatsapp-persistent-connection';
 import fs from 'fs';
 import path from 'path';
 
-// Legacy session configuration (kept for backward compatibility)
-const SESSION_CONFIG = {
-  CLIENT_ID: 'whatsapp-automation-pro',
-  SESSION_PATH: './whatsapp-session-pro',
-  MAX_SESSION_SIZE_MB: 200,
-  SESSION_TIMEOUT_MS: 20000,
-  PUPPETEER_TIMEOUT_MS: 15000,
-  MAX_INIT_RETRIES: 2,
-  HEALTH_CHECK_INTERVAL_MS: 30000,
-};
+// Unified session path (env first, fallback to persistent default)
+const UNIFIED_SESSION_PATH = process.env.WHATSAPP_SESSION_PATH || './whatsapp-session-persistent';
 
 export class WhatsAppService {
   private static instance: WhatsAppService | null = null;
@@ -24,13 +16,8 @@ export class WhatsAppService {
   private connectionEventHandlers: any = {};
 
   private constructor() {
-    // Initialize persistent connection
     this.persistentConnection = WhatsAppPersistentConnection.getInstance();
-    
-    // Setup event handlers for persistent connection
     this.setupPersistentConnectionEvents();
-    
-    // Start legacy health monitoring for compatibility
     this.startHealthMonitoring();
   }
 
@@ -119,7 +106,7 @@ export class WhatsAppService {
     
     this.healthCheckInterval = setInterval(() => {
       this.performHealthCheck();
-    }, SESSION_CONFIG.HEALTH_CHECK_INTERVAL_MS);
+    }, 30000); // Health check interval is now hardcoded to 30s
   }
 
   /**
@@ -290,8 +277,6 @@ export class WhatsAppService {
     canRestore: boolean;
   }> {
     const status = this.persistentConnection.getStatus();
-    
-    // Basic session info
     const sessionInfo = {
       exists: status.sessionExists,
       isValid: status.health.sessionHealth === 'healthy',
@@ -301,24 +286,19 @@ export class WhatsAppService {
       canRestore: status.sessionExists && status.health.sessionHealth !== 'critical'
     };
 
-    // Try to get additional session details
     try {
-      const sessionPath = path.resolve('./whatsapp-session-persistent');
-      
+      const sessionPath = path.resolve(UNIFIED_SESSION_PATH);
       if (fs.existsSync(sessionPath)) {
         const stats = fs.statSync(sessionPath);
         sessionInfo.lastModified = stats.mtime;
-
-      // Get session size
-      try {
-        const { exec } = await import('child_process');
-        const { promisify } = await import('util');
-        const execAsync = promisify(exec);
-          
-        const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
+        try {
+          const { exec } = await import('child_process');
+          const { promisify } = await import('util');
+          const execAsync = promisify(exec);
+          const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
           sessionInfo.size = parseInt(stdout.split('\t')[0]);
-      } catch (error) {
-        console.warn('Could not get session size:', error);
+        } catch (error) {
+          console.warn('Could not get session size:', error);
         }
       }
     } catch (error) {
@@ -332,8 +312,8 @@ export class WhatsAppService {
    * Check if session exists
    */
   public async checkSessionExists(): Promise<boolean> {
-    const status = this.persistentConnection.getStatus();
-    return status.sessionExists;
+    const sessionPath = path.resolve(UNIFIED_SESSION_PATH);
+    return fs.existsSync(sessionPath);
   }
 
   /**
