@@ -164,136 +164,56 @@ export class WhatsAppPersistentConnection {
    */
   private async validateAndPrepareSession(): Promise<void> {
     console.log('🔍 Validating session integrity...');
-    
     const sessionPath = path.resolve(PERSISTENT_CONFIG.SESSION_PATH);
-    
-    // In validateAndPrepareSession, if session exists, set sessionHealth=healthy and skip QR
-    if (fs.existsSync(sessionPath)) {
-      this.connectionHealth.sessionHealth = 'healthy';
-      console.log('📁 Existing session detected, will attempt restore without QR');
-      return;
-    }
-    
-    // Check if session exists
-    if (!fs.existsSync(sessionPath)) {
-      console.log('📁 No existing session found, will create new one');
-      this.connectionHealth.sessionHealth = 'healthy';
-      return;
-    }
-    
-    // Check session size
-    try {
-      const { exec } = await import('child_process');
-      const { promisify } = await import('util');
-      const execAsync = promisify(exec);
-      
-      const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
-      const sizeMB = parseInt(stdout.split('\t')[0]);
-      
-      if (sizeMB > 500) { // 500MB limit for persistent sessions
-        console.log(`🧹 Session too large (${sizeMB}MB), cleaning up...`);
-        await this.clearSession();
-        this.connectionHealth.sessionHealth = 'healthy';
-        return;
-      }
-    } catch (error) {
-      console.warn('⚠️ Could not check session size:', error);
-    }
-    
-    // Check critical session files
+
     const criticalFiles = [
       'Default/Local Storage/leveldb',
       'Default/Session Storage',
       'Default/IndexedDB'
     ];
-    
+
+    let sessionExists = fs.existsSync(sessionPath);
     let missingFiles = 0;
-    for (const file of criticalFiles) {
-      const filePath = path.join(sessionPath, `session-${PERSISTENT_CONFIG.CLIENT_ID}`, file);
-      if (!fs.existsSync(filePath)) {
-        missingFiles++;
+    let sizeMB = 0;
+
+    if (sessionExists) {
+      try {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        const { stdout } = await execAsync(`du -sm "${sessionPath}"`);
+        sizeMB = parseInt(stdout.split('\t')[0]);
+      } catch {
+        // ignore size errors
       }
-    }
-    
-    if (missingFiles > 1) {
-      console.log(`🗑️ Session corrupted (${missingFiles} critical files missing), clearing...`);
-      await this.clearSession();
+
+      for (const f of criticalFiles) {
+        const p = path.join(sessionPath, `session-${PERSISTENT_CONFIG.CLIENT_ID}`, f);
+        if (!fs.existsSync(p)) missingFiles++;
+      }
+
+      if (sizeMB > 800 || missingFiles > 1) {
+        console.log(`🗑️ Session appears corrupted (size=${sizeMB}MB, missingFiles=${missingFiles}), will require QR`);
+        this.connectionHealth.sessionHealth = 'critical';
+        return; // keep path for investigation; QR will be provided
+      }
+
+      console.log('📁 Existing session detected and seems healthy, will attempt restore without QR');
       this.connectionHealth.sessionHealth = 'healthy';
-      this.eventHandlers.onSessionCorrupted?.();
+      return;
     } else {
-      console.log('✅ Session validation passed');
+      // No session, ensure directory exists
+      fs.mkdirSync(sessionPath, { recursive: true });
       this.connectionHealth.sessionHealth = 'healthy';
     }
   }
-  
-  /**
-   * Create and configure WhatsApp client
-   */
-  private async createAndConfigureClient(): Promise<void> {
-    console.log('🔧 Creating WhatsApp client...');
-    
-    // Determine environment
+
+  private async createClientWithOptions(opts?: { disableWebVersionCache?: boolean }): Promise<void> {
     const isRailway = process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_PROJECT_NAME;
-    const isDocker = process.env.DOCKER_CONTAINER || process.env.NODE_ENV === 'production';
-    
     const puppeteerConfig: any = {
       headless: true,
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-field-trial-config',
-        '--disable-back-forward-cache',
-        '--disable-hang-monitor',
-        '--disable-prompt-on-repost',
-        '--disable-sync',
-        '--disable-extensions',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--disable-breakpad',
-        '--disable-component-update',
-        '--disable-domain-reliability',
-        '--disable-sync',
-        '--disable-client-side-phishing-detection',
-        '--disable-plugins',
-        '--disable-plugins-discovery',
-        '--disable-prerender-local-predictor',
-        '--disable-print-preview',
-        '--disable-speech-api',
-        '--disable-file-system',
-        '--disable-presentation-api',
-        '--disable-permissions-api',
-        '--disable-new-bookmark-apps',
-        '--disable-new-tab-first-run',
-        '--disable-background-sync',
-        '--disable-software-rasterizer',
-        '--disable-background-media-suspend',
-        '--disable-audio-support-for-desktop-share',
-        '--disable-tab-for-desktop-share',
-        '--disable-threaded-animation',
-        '--disable-threaded-scrolling',
-        '--disable-in-process-stack-traces',
-        '--disable-histogram-customizer',
-        '--disable-gl-extensions',
-        '--disable-composited-antialiasing',
-        '--disable-canvas-aa',
-        '--disable-3d-apis',
-        '--disable-accelerated-2d-canvas',
-        '--disable-accelerated-jpeg-decoding',
-        '--disable-accelerated-mjpeg-decode',
-        '--disable-app-list-dismiss-on-blur',
-        '--disable-accelerated-video-decode',
-        '--single-process',
-        '--no-zygote'
+        '--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu','--disable-web-security'
       ],
       executablePath: isRailway ? '/usr/bin/chromium-browser' : undefined,
       timeout: 30000,
@@ -301,34 +221,27 @@ export class WhatsAppPersistentConnection {
       ignoreHTTPSErrors: true,
       acceptInsecureCerts: true
     };
-    
-    // Add memory optimization for production
-    if (isDocker || isRailway) {
-      puppeteerConfig.args.push(
-        '--memory-pressure-off',
-        '--max_old_space_size=4096',
-        '--disable-dev-shm-usage'
-      );
-    }
-    
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        clientId: PERSISTENT_CONFIG.CLIENT_ID,
-        dataPath: PERSISTENT_CONFIG.SESSION_PATH
-      }),
+
+    const baseOptions: any = {
+      authStrategy: new LocalAuth({ clientId: PERSISTENT_CONFIG.CLIENT_ID, dataPath: PERSISTENT_CONFIG.SESSION_PATH }),
       puppeteer: puppeteerConfig,
       takeoverOnConflict: true,
       takeoverTimeoutMs: 15000,
-      webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-      }
-    });
-    
-    // Setup event handlers
+    };
+
+    if (!opts?.disableWebVersionCache) {
+      baseOptions.webVersionCache = { type: 'remote', remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html' };
+    } else {
+      baseOptions.webVersionCache = { type: 'none' };
+    }
+
+    this.client = new Client(baseOptions);
     this.setupClientEventHandlers();
-    
-    console.log('✅ WhatsApp client created and configured');
+    console.log(`✅ WhatsApp client created and configured (webVersionCache=${opts?.disableWebVersionCache ? 'none' : 'remote'})`);
+  }
+
+  private async createAndConfigureClient(): Promise<void> {
+    await this.createClientWithOptions();
   }
   
   /**
@@ -338,90 +251,50 @@ export class WhatsAppPersistentConnection {
     if (!this.client) {
       throw new Error('Client not created');
     }
-    
+
     console.log('🚀 Initializing client with enhanced timeout protection...');
-    
-    // Create a more robust initialization promise
-    const initPromise = new Promise<void>((resolve, reject) => {
-      let resolved = false;
-      
-      // Set up event listeners for early resolution
-      const onReady = () => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          console.log('✅ Client ready - initialization successful');
-          resolve();
-        }
-      };
-      
-      const onQR = () => {
-        if (!resolved) {
-          console.log('📱 QR Code generated - initialization progressing...');
-          // Don't resolve yet, but we know it's working
-        }
-      };
-      
-      const onAuthFailure = (msg: string) => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          console.log('❌ Authentication failed during initialization:', msg);
-          reject(new Error(`Authentication failed: ${msg}`));
-        }
-      };
-      
-      const onDisconnected = (reason: string) => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          console.log('❌ Disconnected during initialization:', reason);
-          reject(new Error(`Disconnected during initialization: ${reason}`));
-        }
-      };
-      
-      const cleanup = () => {
+
+    const tryInitialize = async (): Promise<void> => {
+      await new Promise<void>((resolve, reject) => {
+        let resolved = false;
+        const onReady = () => { if (!resolved) { resolved = true; cleanup(); console.log('✅ Client ready - initialization successful'); resolve(); } };
+        const onQR = () => { /* QR handled elsewhere */ };
+        const onAuthFailure = (msg: string) => { if (!resolved) { resolved = true; cleanup(); reject(new Error(`Authentication failed: ${msg}`)); } };
+        const onDisconnected = (reason: string) => { if (!resolved) { resolved = true; cleanup(); reject(new Error(`Disconnected during initialization: ${reason}`)); } };
+        const cleanup = () => { if (this.client) { this.client.removeListener('ready', onReady); this.client.removeListener('qr', onQR); this.client.removeListener('auth_failure', onAuthFailure); this.client.removeListener('disconnected', onDisconnected); } };
         if (this.client) {
-          this.client.removeListener('ready', onReady);
-          this.client.removeListener('qr', onQR);
-          this.client.removeListener('auth_failure', onAuthFailure);
-          this.client.removeListener('disconnected', onDisconnected);
+          this.client.once('ready', onReady);
+          this.client.on('qr', onQR);
+          this.client.once('auth_failure', onAuthFailure);
+          this.client.once('disconnected', onDisconnected);
+          this.client.initialize().catch(err => { if (!resolved) { resolved = true; cleanup(); reject(err); } });
+        } else {
+          reject(new Error('Client is null'));
         }
-      };
-      
-      // Attach listeners
-      if (this.client) {
-        this.client.once('ready', onReady);
-        this.client.on('qr', onQR);
-        this.client.once('auth_failure', onAuthFailure);
-        this.client.once('disconnected', onDisconnected);
-        
-        // Start initialization
-        this.client.initialize().catch((error) => {
-          if (!resolved) {
-            resolved = true;
-            cleanup();
-            reject(error);
-          }
-        });
-      } else {
-        reject(new Error('Client is null'));
-      }
-    });
-    
-    // Enhanced timeout with better error message
+      });
+    };
+
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        reject(new Error(`Initialization timeout after ${PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME / 1000} seconds. This might be due to network issues or WhatsApp service problems. Please try again.`));
-      }, PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME);
+      setTimeout(() => reject(new Error(`Initialization timeout after ${PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME / 1000} seconds. This might be due to network issues or WhatsApp service problems. Please try again.`)), PERSISTENT_CONFIG.MAX_INITIALIZATION_TIME);
     });
-    
+
     try {
-      await Promise.race([initPromise, timeoutPromise]);
-      console.log('✅ Client initialization completed successfully');
-    } catch (error) {
+      await Promise.race([tryInitialize(), timeoutPromise]);
+    } catch (error: any) {
+      const msg = String(error?.message || 'unknown');
       console.error('❌ Client initialization failed:', error);
-      // Cleanup on failure
+
+      // Fallback: retry without webVersionCache if failure indicates cache/version fetch issue
+      const versionError = msg.includes('fetching version') || msg.includes('webVersion') || msg.includes('a is not a function');
+      if (versionError) {
+        console.log('🛠️ Retrying initialization without webVersionCache...');
+        await this.cleanupClient();
+        await this.createClientWithOptions({ disableWebVersionCache: true });
+        await Promise.race([tryInitialize(), timeoutPromise]);
+        return;
+      }
+
+      // Cleanup and rethrow for outer handler
       await this.cleanupClient();
       throw error;
     }
@@ -433,29 +306,22 @@ export class WhatsAppPersistentConnection {
   private setupClientEventHandlers(): void {
     if (!this.client) return;
     
-    // QR Code generation
     this.client.on('qr', async (qr) => {
-      // Only provide QR if there's no existing session
       const sessionPath = path.resolve(PERSISTENT_CONFIG.SESSION_PATH);
-      if (fs.existsSync(sessionPath)) {
-        console.log('🔒 Session exists, suppressing QR display');
+      const sessionExists = fs.existsSync(sessionPath);
+      const shouldSuppress = sessionExists && this.connectionHealth.sessionHealth === 'healthy';
+      if (shouldSuppress) {
+        console.log('🔒 Session exists and healthy, suppressing QR display');
         return;
       }
       console.log('📱 QR Code generated for authentication');
       console.log('🔍 QR Code raw data length:', qr.length);
-      
       try {
-        // Convert QR code to data URL for browser display
         const dataURL = await qrCodeToDataURL(qr);
         this.qrCode = dataURL;
-        
         console.log('✅ QR Code converted to data URL format');
-        console.log('🔍 Data URL length:', dataURL.length);
-        console.log('🔍 Data URL starts with:', dataURL.substring(0, 50) + '...');
-        
       } catch (error) {
         console.error('❌ Error converting QR code to data URL:', error);
-        // Fallback to original QR code string
         this.qrCode = qr;
         console.log('⚠️ Using original QR code as fallback');
       }
