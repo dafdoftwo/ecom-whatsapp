@@ -773,19 +773,16 @@ export class WhatsAppPersistentConnection {
     
     while (retries < maxRetries) {
       try {
-        const whatsappId = `${phoneNumber}@c.us`;
-        
-        // Check if number exists
-        const numberDetails = await this.client.getNumberId(whatsappId);
+        // wwebjs expects the raw international number (without @c.us) in getNumberId
+        const numberDetails = await this.client.getNumberId(phoneNumber);
         if (!numberDetails) {
           console.error(`Phone number ${phoneNumber} not found on WhatsApp`);
           return false;
         }
         
-        // Send message
-        await this.client.sendMessage(numberDetails._serialized, message);
+        const chatId = (numberDetails as any)._serialized || `${phoneNumber}@c.us`;
+        await this.client.sendMessage(chatId, message);
         
-        // Update successful message timestamp
         this.connectionHealth.lastSuccessfulMessage = new Date();
         
         console.log(`✅ Message sent successfully to ${phoneNumber}`);
@@ -795,7 +792,6 @@ export class WhatsAppPersistentConnection {
         retries++;
         console.error(`❌ Message send attempt ${retries} failed:`, error);
         
-        // Check if it's a connection error
         if (error instanceof Error && (
           error.message.includes('Session closed') ||
           error.message.includes('Protocol error') ||
@@ -803,11 +799,7 @@ export class WhatsAppPersistentConnection {
         )) {
           console.log('🔄 Connection error detected, attempting reconnection...');
           this.handleDisconnection('Message send error');
-          
-          // Wait for potential reconnection
           await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // Check if reconnected
           if (!this.isConnected) {
             return false;
           }
@@ -817,7 +809,6 @@ export class WhatsAppPersistentConnection {
           return false;
         }
         
-        // Wait before retry
         await new Promise(resolve => setTimeout(resolve, 1000 * retries));
       }
     }
