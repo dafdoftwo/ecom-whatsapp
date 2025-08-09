@@ -127,7 +127,7 @@ export class WhatsAppService {
   }
 
   /**
-   * Send message using persistent connection
+   * Send message using persistent connection with auto-reconnect
    */
   public async sendMessage(phoneNumber: string, message: string): Promise<boolean> {
     try {
@@ -140,6 +140,27 @@ export class WhatsAppService {
 
       console.log(`📤 Sending message to ${processedPhone}: ${message.substring(0, 50)}...`);
 
+      // Check if client is ready for sending
+      const currentStatus = this.getStatus();
+      if (!currentStatus.isConnected) {
+        console.log('⚠️ WhatsApp not connected, attempting auto-reconnect...');
+        
+        try {
+          const reconnectResult = await this.smartInitialize();
+          if (!reconnectResult.success) {
+            console.error(`❌ Auto-reconnect failed: ${reconnectResult.message}`);
+            if (reconnectResult.needsQR) {
+              console.error('📱 QR code authentication required');
+            }
+            return false;
+          }
+          console.log('✅ Auto-reconnect successful');
+        } catch (reconnectError) {
+          console.error('❌ Auto-reconnect error:', reconnectError);
+          return false;
+        }
+      }
+
       // Use persistent connection to send message
       const success = await this.persistentConnection.sendMessage(processedPhone, message);
       
@@ -148,6 +169,14 @@ export class WhatsAppService {
         return true;
       } else {
         console.error(`❌ Failed to send message to ${processedPhone}`);
+        
+        // If sending failed, check if it's a connection issue
+        const statusAfterFail = this.getStatus();
+        if (!statusAfterFail.isConnected) {
+          console.log('🔄 Connection lost during send, marking for reconnection...');
+          // Don't attempt immediate reconnect to avoid loops, let the system handle it
+        }
+        
         return false;
       }
     } catch (error) {

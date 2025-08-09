@@ -342,12 +342,28 @@ export class AutomationEngine {
           const health = whatsapp.getConnectionHealth();
           
           if (!status.isConnected) {
-            console.log('⚠️ WhatsApp disconnected - messages will be queued, persistent connection will auto-reconnect');
+            console.log('⚠️ WhatsApp disconnected - attempting auto-repair...');
             
-            // If session is corrupted, trigger smart recovery
-            if (health.sessionHealth === 'critical') {
-              console.log('🔄 Critical session detected, triggering smart recovery...');
-              await whatsapp.smartInitialize();
+            try {
+              const repairResult = await whatsapp.smartInitialize();
+              if (repairResult.success) {
+                console.log('✅ WhatsApp auto-repair successful');
+              } else {
+                console.log(`⚠️ WhatsApp auto-repair failed: ${repairResult.message}`);
+                if (repairResult.needsQR) {
+                  console.log('📱 QR code authentication required for WhatsApp');
+                }
+                console.log('📋 Messages will be queued until WhatsApp reconnects');
+              }
+            } catch (repairError) {
+              console.warn('⚠️ WhatsApp auto-repair error:', repairError);
+              console.log('📋 Messages will be queued until WhatsApp reconnects');
+            }
+            
+            // Get updated status after repair attempt
+            const updatedStatus = whatsapp.getStatus();
+            if (updatedStatus.isConnected) {
+              console.log('✅ WhatsApp repaired and ready for message sending');
             }
           } else {
             console.log(`✅ WhatsApp connected (uptime: ${Math.round(health.totalUptime / 1000)}s, health: ${health.sessionHealth})`);
