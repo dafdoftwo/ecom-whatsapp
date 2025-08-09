@@ -467,6 +467,22 @@ export class AutomationEngine {
             continue;
           }
 
+          // Ensure processedPhone and orderId are populated for downstream handlers
+          if (!row.processedPhone) {
+            row.processedPhone = sanitizationResult.finalPhone || undefined;
+          }
+          if (!row.orderId) {
+            try {
+              row.orderId = PhoneProcessor.generateOrderId(
+                row.name || 'عميل',
+                row.processedPhone || sanitizationResult.finalPhone || '',
+                row.orderDate || ''
+              );
+            } catch {
+              row.orderId = `row_${row.rowIndex || 0}_${(row.name || '').substring(0,3)}`;
+            }
+          }
+
           // Stage 2: Business Logic Application
           const orderId = row.orderId!;
           const currentStatus = row.orderStatus;
