@@ -66,27 +66,20 @@ class FileStore {
 class RedisStore {
   private client: any | null = null;
   private connecting = false;
-  private lastFailureAt: number = 0;
 
   private async getClient() {
     if (!REDIS_URL) return null;
-    // Backoff if last failure was recent (to avoid log spam and socket storms)
-    if (Date.now() - this.lastFailureAt < 30000) return null;
     if (this.client) return this.client;
     if (this.connecting) return null;
     try {
       this.connecting = true;
       const { createClient } = await import('redis');
       const client = createClient({ url: REDIS_URL });
-      client.on('error', (err: any) => {
-        this.lastFailureAt = Date.now();
-        console.warn('DuplicateGuard Redis error', err);
-      });
+      client.on('error', (err: any) => console.warn('DuplicateGuard Redis error', err));
       await client.connect();
       this.client = client;
       return this.client;
     } catch (e) {
-      this.lastFailureAt = Date.now();
       console.warn('DuplicateGuard: Redis not available, using file fallback');
       return null;
     } finally {
@@ -97,14 +90,9 @@ class RedisStore {
   async hasAny(keys: string[]): Promise<boolean> {
     const c = await this.getClient();
     if (!c) return false;
-    try {
-      for (const k of keys) {
-        const exists = await c.exists(k);
-        if (exists) return true;
-      }
-    } catch (e) {
-      this.lastFailureAt = Date.now();
-      return false;
+    for (const k of keys) {
+      const exists = await c.exists(k);
+      if (exists) return true;
     }
     return false;
   }
@@ -112,15 +100,11 @@ class RedisStore {
   async addAll(keys: string[]): Promise<void> {
     const c = await this.getClient();
     if (!c) return;
-    try {
-      const pipeline = c.multi();
-      for (const k of keys) {
-        pipeline.set(k, '1');
-      }
-      await pipeline.exec();
-    } catch (e) {
-      this.lastFailureAt = Date.now();
+    const pipeline = c.multi();
+    for (const k of keys) {
+      pipeline.set(k, '1');
     }
+    await pipeline.exec();
   }
 }
 

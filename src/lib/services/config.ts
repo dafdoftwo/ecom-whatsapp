@@ -15,7 +15,7 @@ const DEFAULT_MESSAGE_TEMPLATES: MessageTemplates = {
   noAnswer: 'السلام عليكم ورحمة الله وبركاته مع حضرتك هبه\nيبدو أننا لم نوفق في التواصل معك هاتفياً لتأكيد طلبك ({productName}). 😟\nحرصاً منا على عدم تأخيره، نرجو منك الرد علينا في أقرب فرصة. نحن في انتظارك!',
   shipped: 'أخبار رائعة، لحضرتك 🎉\nطلبك ({productName}) انطلق في رحلته إليك الآن. استعد لاستقبال جرعة من السعادة قريباً! 🚚\nشكراً لصبرك وحماسك.',
   rejectedOffer: 'السلام عليكم اخبار حضرتك ايه؟\nقد لا يكون طلبك الأخير قد اكتمل، لكننا لم ننسَ اهتمامك بنا. ❤️\nتقديراً لذلك، يسعدنا أن نهديك فرصة ثانية بتخفيض خاص 20% على ({productName}). نأمل أن تستفيد من هذا الخصم!',
-  reminder: 'السلام عليكم\n\nالمحترم/ة {name}\n\n⏰ تذكير بطلبكم رقم {orderId}\n\n💰 المبلغ: {amount} جنيه (دفع عند الاستلام)\n\n⚠️ تنبيه:\n• المنتج متوفر بكمية محدودة\n• السعر مضمون حتى نهاية اليوم\n• قد ينفذ في أي وقت\n\n📱 للتأكيد:\n• رد بكلمة "أؤكد"\n• أو اتصل بنا\n\n🎁 عند التأكيد اليوم: هدية مجانية\n\nفريق {companyName}',
+  reminder: 'السلام عليكم\n\nالمحترم/ة {name}\n\n⏰ تذكير بطلبكم رقم {orderId}\n\n💰 المبلغ: {amount} جنيه (دفع عند الاستلام)\n\n⚠️ تنبيه:\n• المنتج متوفر بكمية محدودة\n• السعر مضمون حتى نهاية اليوم\n• قد ينفذ في أي وقت\n\n📱 للتأكيد:\n• رد بكلمة \"أؤكد\"\n• أو اتصل بنا\n\n🎁 عند التأكيد اليوم: هدية مجانية\n\nفريق {companyName}',
   welcome: '',
   confirmed: '',
   delivered: '',
@@ -44,41 +44,6 @@ const DEFAULT_STATUS_SETTINGS = {
     reminder: "تذكير تلقائي - إرسال تذكير للطلبات المعلقة"
   }
 };
-
-async function tryReadFile<T>(filePath: string, defaultValue: T): Promise<T> {
-  try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return defaultValue;
-  }
-}
-
-function parseEnvGoogleConfig(): GoogleConfig | null {
-  // Accept either full URL or spreadsheet ID
-  const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || '';
-  const spreadsheetUrlEnv = process.env.GOOGLE_SPREADSHEET_URL || '';
-  const serviceAccountRaw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '';
-
-  if (!spreadsheetId && !spreadsheetUrlEnv) return null;
-  if (!serviceAccountRaw) return null;
-
-  let credentials: any = {};
-  try {
-    credentials = JSON.parse(serviceAccountRaw);
-  } catch {
-    // If value is base64, try decoding
-    try {
-      const decoded = Buffer.from(serviceAccountRaw, 'base64').toString('utf-8');
-      credentials = JSON.parse(decoded);
-    } catch {
-      return null;
-    }
-  }
-
-  const spreadsheetUrl = spreadsheetUrlEnv || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
-  return { spreadsheetUrl, credentials };
-}
 
 export class ConfigService {
   private static async ensureConfigDir(): Promise<void> {
@@ -113,24 +78,7 @@ export class ConfigService {
 
   // Google Configuration
   static async getGoogleConfig(): Promise<GoogleConfig> {
-    // 1) Try file first
-    const filePath = path.join(CONFIG_DIR, 'google.json');
-    const fileConfig = await tryReadFile<GoogleConfig>(filePath, DEFAULT_GOOGLE_CONFIG);
-
-    // If file config is valid, return it
-    if (fileConfig.spreadsheetUrl && fileConfig.credentials && Object.keys(fileConfig.credentials).length > 0) {
-      return fileConfig;
-    }
-
-    // 2) Fallback to environment variables
-    const envConfig = parseEnvGoogleConfig();
-    if (envConfig) {
-      console.log('✅ Loaded Google config from environment variables');
-      return envConfig;
-    }
-
-    console.warn('⚠️ Google Sheets configuration not found or incomplete');
-    return DEFAULT_GOOGLE_CONFIG;
+    return this.readConfigFile<GoogleConfig>('google.json', DEFAULT_GOOGLE_CONFIG);
   }
 
   static async setGoogleConfig(config: GoogleConfig): Promise<void> {
@@ -168,19 +116,19 @@ export class ConfigService {
   // Get all configurations
   static async getAllConfigs() {
     try {
-      const [google, messages, timing, statusSettings] = await Promise.all([
-        this.getGoogleConfig(),
-        this.getMessageTemplates(),
-        this.getTimingConfig(),
-        this.getStatusSettings(),
-      ]);
+    const [google, messages, timing, statusSettings] = await Promise.all([
+      this.getGoogleConfig(),
+      this.getMessageTemplates(),
+      this.getTimingConfig(),
+      this.getStatusSettings(),
+    ]);
 
-      return {
-        google,
-        messages: messages.templates,
-        timing,
+    return {
+      google,
+      messages: messages.templates,
+      timing,
         statusSettings: statusSettings || DEFAULT_STATUS_SETTINGS,
-      };
+    };
     } catch (error) {
       console.error('Error getting all configs:', error);
       // Return defaults if all configs fail
@@ -210,7 +158,7 @@ export class ConfigService {
     try {
       // Check Google config
       const googleConfig = await this.getGoogleConfig();
-      health.google.exists = !!(googleConfig);
+      health.google.exists = true;
       health.google.valid = !!(googleConfig.spreadsheetUrl && googleConfig.credentials);
       health.google.configured = health.google.valid && Object.keys(googleConfig.credentials).length > 0;
 

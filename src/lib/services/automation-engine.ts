@@ -307,7 +307,7 @@ export class AutomationEngine {
 
   private static async startProcessingLoop(): Promise<void> {
     const timingConfig = await ConfigService.getTimingConfig();
-    const checkInterval = (timingConfig.checkIntervalSeconds || 15) * 1000;
+    const checkInterval = (timingConfig.checkIntervalSeconds || 30) * 1000;
     
     console.log(`⏰ Processing loop configured with ${checkInterval / 1000} second intervals`);
     
@@ -342,28 +342,12 @@ export class AutomationEngine {
           const health = whatsapp.getConnectionHealth();
           
           if (!status.isConnected) {
-            console.log('⚠️ WhatsApp disconnected - attempting auto-repair...');
+            console.log('⚠️ WhatsApp disconnected - messages will be queued, persistent connection will auto-reconnect');
             
-            try {
-              const repairResult = await whatsapp.smartInitialize();
-              if (repairResult.success) {
-                console.log('✅ WhatsApp auto-repair successful');
-              } else {
-                console.log(`⚠️ WhatsApp auto-repair failed: ${repairResult.message}`);
-                if (repairResult.needsQR) {
-                  console.log('📱 QR code authentication required for WhatsApp');
-                }
-                console.log('📋 Messages will be queued until WhatsApp reconnects');
-              }
-            } catch (repairError) {
-              console.warn('⚠️ WhatsApp auto-repair error:', repairError);
-              console.log('📋 Messages will be queued until WhatsApp reconnects');
-            }
-            
-            // Get updated status after repair attempt
-            const updatedStatus = whatsapp.getStatus();
-            if (updatedStatus.isConnected) {
-              console.log('✅ WhatsApp repaired and ready for message sending');
+            // If session is corrupted, trigger smart recovery
+            if (health.sessionHealth === 'critical') {
+              console.log('🔄 Critical session detected, triggering smart recovery...');
+              await whatsapp.smartInitialize();
             }
           } else {
             console.log(`✅ WhatsApp connected (uptime: ${Math.round(health.totalUptime / 1000)}s, health: ${health.sessionHealth})`);
@@ -426,7 +410,7 @@ export class AutomationEngine {
     };
 
     // Start the first processing cycle with a small delay
-    console.log('🚀 Starting first processing cycle in 2 seconds...');
+    console.log('🚀 Starting first processing cycle in 5 seconds...');
     this.intervalId = setTimeout(() => {
       processLoop().catch(error => {
         console.error('❌ Critical error in initial processing loop:', error);
@@ -434,15 +418,12 @@ export class AutomationEngine {
         this.isRunning = false;
         throw error;
       });
-    }, 2000); // 2 second delay for initial startup
+    }, 5000); // 5 second delay for initial startup
   }
 
   private static async processSheetDataOptimized(): Promise<void> {
     try {
       console.log('📊 Starting optimized sheet data processing with network resilience...');
-      
-      // Check for status history reset flag
-      await this.checkAndHandleStatusHistoryReset();
       
       // Get configuration - FIX: Extract templates from the response
       const templatesConfig = await ConfigService.getMessageTemplates();
@@ -486,39 +467,21 @@ export class AutomationEngine {
             continue;
           }
 
-          // Ensure processedPhone and orderId are populated for downstream handlers
-          if (!row.processedPhone) {
-            row.processedPhone = sanitizationResult.finalPhone || undefined;
-          }
-          if (!row.orderId) {
-            try {
-              row.orderId = PhoneProcessor.generateOrderId(
-                row.name || 'عميل',
-                row.processedPhone || sanitizationResult.finalPhone || '',
-                row.orderDate || ''
-              );
-            } catch {
-              row.orderId = `row_${row.rowIndex || 0}_${(row.name || '').substring(0,3)}`;
-            }
-          }
-
           // Stage 2: Business Logic Application
           const orderId = row.orderId!;
           const currentStatus = row.orderStatus;
-          // Use a stable key per spreadsheet row to detect first‑seen and status changes even if orderId formatting changes
-          const stableKey = orderId || `row_${row.rowIndex}_${(row.name || '').substring(0,3)}`;
-          const previousStatusData = this.orderStatusHistory.get(stableKey);
+          const previousStatusData = this.orderStatusHistory.get(orderId);
           
           // Update status history
-          this.orderStatusHistory.set(stableKey, {
+          this.orderStatusHistory.set(orderId, {
             status: currentStatus,
             timestamp: Date.now()
           });
-           
+
           // Check if this is a new order or status change
           const isNewOrder = !previousStatusData;
           const statusChanged = previousStatusData && previousStatusData.status !== currentStatus;
- 
+
           if (isNewOrder || statusChanged) {
             console.log(`📝 Processing order ${orderId}: ${isNewOrder ? 'NEW' : 'STATUS_CHANGE'} - ${currentStatus}`);
             await this.handleEgyptianOrderStatusChange(row, templates, reminderDelayHours, rejectedOfferDelayHours);
@@ -526,8 +489,6 @@ export class AutomationEngine {
           } else if (previousStatusData) {
             // Check for reminder conditions
             await this.checkReminderConditions(row, previousStatusData, templates, reminderDelayHours);
-            // Complementary send: if message for current status hasn't been sent before, send it once
-            await this.ensureMessageForCurrentStatusIfMissing(row, templates, reminderDelayHours, rejectedOfferDelayHours);
           }
         }
       }
@@ -802,14 +763,14 @@ export class AutomationEngine {
     const allowed = await duplicateCheck.promise;
     if (!allowed) {
       console.log(`🚫 Duplicate prevented (persistent): newOrder for ${orderId}`);
-      return;
+          return;
     }
 
     const newOrderMessage = this.replaceMessageVariables(templates.newOrder, row);
     const messageJob: MessageJob = { phoneNumber: processedPhone, message: newOrderMessage, orderId, rowIndex, messageType: 'newOrder' as any };
     await QueueService.addMessageJob(messageJob);
-    await this.markMessageAsSent(orderId, 'newOrder', name, processedPhone);
 
+    // schedule reminder if enabled
     const statusSettings = await ConfigService.getStatusSettings();
     if (statusSettings?.enabledStatuses?.reminder) {
       const reminderJob: ReminderJob = { orderId, rowIndex, phoneNumber: processedPhone, customerName: name, orderStatus: statusType };
@@ -827,7 +788,6 @@ export class AutomationEngine {
     const msg = this.replaceMessageVariables(templates.noAnswer, row);
     const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'noAnswer' } as any;
     await QueueService.addMessageJob(messageJob);
-    await this.markMessageAsSent(orderId, 'noAnswer', name, processedPhone);
   }
 
   private static async handleShipped(row: SheetRow, templates: MessageTemplates): Promise<void> {
@@ -840,7 +800,6 @@ export class AutomationEngine {
     const msg = this.replaceMessageVariables(templates.shipped, row);
     const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'shipped' } as any;
     await QueueService.addMessageJob(messageJob);
-    await this.markMessageAsSent(orderId, 'shipped', name, processedPhone);
   }
 
   private static async handleRefusedDelivery(row: SheetRow, templates: MessageTemplates, rejectedOfferDelayHours: number): Promise<void> {
@@ -853,13 +812,12 @@ export class AutomationEngine {
     const msg = this.replaceMessageVariables(templates.rejectedOffer, row);
     const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'rejectedOffer' } as any;
     await QueueService.addMessageJob(messageJob);
-    await this.markMessageAsSent(orderId, 'rejectedOffer', name, processedPhone);
   }
 
   private static async checkReminderConditions(
-    row: SheetRow,
-    previousStatusData: { status: string, timestamp: number },
-    templates: MessageTemplates,
+    row: SheetRow, 
+    previousStatusData: { status: string, timestamp: number }, 
+    templates: MessageTemplates, 
     reminderDelayHours: number
   ): Promise<void> {
     const { orderId, processedPhone, name, rowIndex } = row;
@@ -874,71 +832,7 @@ export class AutomationEngine {
 
       const msg = this.replaceMessageVariables(templates.reminder || templates.newOrder, row);
       const messageJob: MessageJob = { phoneNumber: processedPhone, message: msg, orderId, rowIndex, messageType: 'reminder' } as any;
-      await QueueService.addMessageJob(messageJob);
-      await this.markMessageAsSent(orderId, 'reminder', name, processedPhone);
-    }
-  }
-
-  private static async ensureMessageForCurrentStatusIfMissing(
-    row: SheetRow,
-    templates: MessageTemplates,
-    reminderDelayHours: number,
-    rejectedOfferDelayHours: number
-  ): Promise<void> {
-    const status = (row.orderStatus || '').trim();
-    const type = this.mapStatusToType(status);
-    if (!type) return;
-    const canSend = await (await import('./duplicate-guard')).DuplicateGuardService.shouldSend(
-      row.orderId!, type as any, row.processedPhone || undefined, row.name || undefined
-    );
-    if (!canSend) return;
-    switch (type) {
-      case 'newOrder':
-        await this.handleNewOrder(row, templates, reminderDelayHours, 'جديد');
-        break;
-      case 'noAnswer':
-        await this.handleNoAnswer(row, templates, reminderDelayHours);
-        break;
-      case 'shipped':
-        await this.handleShipped(row, templates);
-        break;
-      case 'rejectedOffer':
-        await this.handleRefusedDelivery(row, templates, rejectedOfferDelayHours);
-        break;
-      case 'reminder':
-        // reminders تُدار زمنياً، نتجنب إرسال فوري هنا
-        break;
-    }
-  }
-
-  private static mapStatusToType(status: string): 'newOrder' | 'noAnswer' | 'shipped' | 'rejectedOffer' | 'reminder' | null {
-    switch (status) {
-      case this.EGYPTIAN_ORDER_STATUSES.NEW:
-      case this.EGYPTIAN_ORDER_STATUSES.NEW_2:
-      case this.EGYPTIAN_ORDER_STATUSES.NEW_3:
-      case this.EGYPTIAN_ORDER_STATUSES.NEW_4:
-      case this.EGYPTIAN_ORDER_STATUSES.UNDEFINED:
-      case this.EGYPTIAN_ORDER_STATUSES.EMPTY:
-        return 'newOrder';
-      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_1:
-      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_2:
-      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_3:
-      case this.EGYPTIAN_ORDER_STATUSES.NO_ANSWER_4:
-        return 'noAnswer';
-      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED:
-      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_2:
-      case this.EGYPTIAN_ORDER_STATUSES.CONFIRMED_3:
-      case this.EGYPTIAN_ORDER_STATUSES.SHIPPED:
-      case this.EGYPTIAN_ORDER_STATUSES.SHIPPED_2:
-        return 'shipped';
-      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_1:
-      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_2:
-      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_3:
-      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_4:
-      case this.EGYPTIAN_ORDER_STATUSES.REJECTED_5:
-        return 'rejectedOffer';
-      default:
-        return null;
+        await QueueService.addMessageJob(messageJob);
     }
   }
 
@@ -1390,39 +1284,5 @@ export class AutomationEngine {
   // Public method for testing message variable replacement
   static testMessageReplacement(template: string, row: any): string {
     return this.replaceMessageVariables(template, row);
-  }
-
-  /**
-   * Check for status history reset flag and handle it
-   */
-  private static async checkAndHandleStatusHistoryReset(): Promise<void> {
-    try {
-      const fs = await import('fs');
-      const path = await import('path');
-      
-      const configDir = path.join(process.cwd(), 'config');
-      const resetFlagFile = path.join(configDir, 'status-history-reset.json');
-      
-      if (fs.existsSync(resetFlagFile)) {
-        console.log('🔄 Status history reset flag detected - resetting all status history...');
-        
-        // Clear the status history map
-        this.orderStatusHistory.clear();
-        console.log('✅ Status history cleared - all leads will be treated as new');
-        
-        // Remove the flag file
-        fs.unlinkSync(resetFlagFile);
-        console.log('✅ Reset flag file removed');
-        
-        // Also clear any other tracking data to ensure fresh start
-        this.processedOrders.clear();
-        this.updatedFromEmptyStatus.clear();
-        
-        console.log('🚀 Fresh start initiated - all current leads will trigger message sending');
-      }
-    } catch (error) {
-      // If there's an error checking the flag, just continue normally
-      console.log('⚠️ Could not check status history reset flag:', error);
-    }
   }
 } 

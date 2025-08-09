@@ -340,25 +340,22 @@ export class QueueService {
     
     try {
       console.log(`📱 Processing message job for order ${orderId} with network resilience...`);
-
-      // Strong idempotency barrier at execution-time (orderId + phone + type)
-      const allowed = await DuplicateGuardService.shouldSend(orderId, messageType as any, phoneNumber, undefined);
-      if (!allowed) {
-        console.log(`🚫 Duplicate prevented at execution-time: ${messageType} for order ${orderId} (${phoneNumber})`);
-        return;
-      }
-
-      // Pre-mark as sent to avoid duplicates on retries/timeouts
-      await DuplicateGuardService.markSent(orderId, messageType as any, phoneNumber, undefined);
       
       // Use NetworkResilienceService for resilient WhatsApp message sending
       const success = await NetworkResilienceService.sendWhatsAppMessageResilient(phoneNumber, message);
       
       if (success) {
+        // Mark as sent in persistent duplicate guard ONLY on success
+        await DuplicateGuardService.markSent(orderId, messageType as any, phoneNumber, '');
+        // Update Google Sheets with the sent message status - DISABLED (READ-ONLY MODE)
+        // await GoogleSheetsService.updateWhatsAppStatus(
+        //   rowIndex,
+        //   `${messageType} sent`,
+        //   message.substring(0, 50) + '...'
+        // );
+        console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with status: ${messageType} sent`);
         console.log(`✅ Message sent successfully to ${phoneNumber} for order ${orderId} (resilient)`);
       } else {
-        // Do not roll back the mark to avoid duplicates; log failure
-        console.warn(`⚠️ Message reported as failed to ${phoneNumber} for order ${orderId}. Idempotency mark kept to prevent duplicates.`);
         throw new Error('Failed to send WhatsApp message');
       }
     } catch (error) {
@@ -368,7 +365,14 @@ export class QueueService {
       const stats = NetworkResilienceService.getStats();
       console.error(`Network stats: ${stats.totalRetries} retries, circuit breaker: ${stats.circuitBreakerState}`);
       
-      // Note: We keep the idempotency mark to avoid duplicate sends on retries after partial success
+      // Update Google Sheets with error status - DISABLED (READ-ONLY MODE)
+      // await GoogleSheetsService.updateWhatsAppStatus(
+      //   rowIndex,
+      //   'message failed',
+      //   `Error: ${error}`
+      // );
+      console.log(`🔒 READ-ONLY: Would update row ${rowIndex} with error status: message failed`);
+      
       throw error;
     }
   }
